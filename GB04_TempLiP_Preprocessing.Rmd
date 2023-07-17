@@ -1,0 +1,817 @@
+---
+title: "GB_TempLiP_Preprocessing"
+author: "Aaron Fehr"
+date: "2023-06-27"
+output:
+  word_document: default
+  html_document: default
+  pdf_document: default
+---
+
+This script takes Spectronaut 17 output files for the LiP and tryptic fraction preprocesses the data. It further calculates differential abundance changes with t-tests for the LiP and TrP data. Also, the Adjusted difference is calculated the "MSstats-way", adjusting the fold-changes, propagating the standard error and approximating the degrees of freedom using the Satterthwaite equation.
+
+**Lip data:**
+
+1.  Precursors are filtered based on minimal intensity, q-value and decoy
+2.  Calculation of log2-ms2raw-intensities and median normalisation over the whole dataset
+3.  Filtering for proteotypicity and calculation of peptide environment (tryptic, semi, coverage ..)
+4.  Annotation of "missingness" for precursors based on time-point 0 -\> imputation would be performed here on precursor level
+5.  Summing up of precursor intensities to peptide intensities for each modified peptide (chemical entity)
+6.  Removal of all peptides with less than 3 observations
+
+**Trp data:**
+
+0.  For qc: same as above
+
+1.  Filter Protein groups based on minimal intensity and pg_qvalue
+
+2.  Calculate log2 protein group intensity
+
+3.  Median normalise protein group inensity
+
+**QC-plots:**
+
+Make qc plots for the data (self explanatory)
+
+**Calculate differential abundance:**
+
+0. Using Protti function for LiP and Trp Set.
+
+1. The differential abundance tables are combined and the error propagated. 
+
+2. The difference is adjusted by calculating the Fold-Change ratio of peptide and protein (subtraction due to log-space)
+
+3. The degrees of freedom are calculated using the Satterthwaite equation and the significance assessed with a standard t-test.
+
+4. P-values are adjusted with Benjamini-Hochberg for each group !no correction is performed for the multiple comparisons!
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(protti)
+library(ComplexUpset)
+library(broom)
+library(data.table)
+library(vsn)
+
+```
+Read in general stuff
+```{r}
+# Set experiment name:
+Experiment_Name = "GB_TempLiP"
+Run = format(Sys.time(), "%y%m%d_%H%M")
+Run = "Exclusion_15min"
+
+uniprot = read_tsv("Uniprot_human_230420.tsv") 
+
+uniprot = uniprot %>%
+  dplyr::mutate(pg_protein_accessions = Entry, Gene = `Gene Names (primary)`, Sequence, Length)
+
+```
+
+LiP Normalization and summarization to Peptide Level
+```{r}
+# Read in raw data
+
+raw_lip = read_protti("./Temporal_LiP/Temporal_LiP/GB04_rawfiles/20230627_085946_230609_fehra_GB04_LiP_excluded_Report.xls") %>%
+  dplyr::select(r_condition,
+                r_file_name,
+                r_replicate,
+                pg_protein_accessions,
+                pg_qvalue,
+                pg_quantity,
+                pep_is_proteotypic,
+                pep_nr_of_missed_cleavages,
+                pep_stripped_sequence,
+                eg_is_decoy,
+                eg_modified_sequence,
+                eg_apex_rt,
+                eg_qvalue,
+                fg_ms2raw_quantity,
+                fg_charge) %>%
+  dplyr::mutate(sample = paste(r_condition, "LiP", r_replicate, sep = "_")) 
+
+# Normalisation
+
+lip_normalised = raw_lip %>%
+  dplyr::filter(eg_is_decoy == FALSE) %>%
+  dplyr::filter(eg_qvalue <= 0.01) %>%
+  dplyr::filter(fg_ms2raw_quantity >= 10) %>%
+  dplyr::mutate(eg_prec_id = paste(eg_modified_sequence, fg_charge, sep ="")) %>%
+  dplyr::mutate(intensity_log2 = log2(fg_ms2raw_quantity)) %>%
+  protti::normalise(sample, intensity_log2, method = "median") %>%
+  dplyr::mutate(normalised_intensity = 2^normalised_intensity_log2)
+
+
+rm(raw_lip)
+
+# Filtering for proteotypicity
+# Joining with Uniprot data and calculation of peptide statistics
+
+
+lip_filtered_uniprot = lip_normalised %>%
+  dplyr::filter(pep_is_proteotypic == 1) %>%
+  dplyr::left_join(uniprot,
+            by = "pg_protein_accessions") %>%
+  dplyr::filter(pg_protein_accessions != "Q99550") %>% # some issue with this protein sequence; 
+  protti::find_peptide(protein_sequence = Sequence,
+               peptide_sequence = pep_stripped_sequence) %>%
+  protti::assign_peptide_type(aa_before = aa_before,
+               last_aa = last_aa, 
+               aa_after = aa_after) %>%
+  protti::calculate_sequence_coverage(protein_sequence = Sequence,
+                    peptides = pep_stripped_sequence)
+
+peptide_meta_data = lip_filtered_uniprot %>%
+  dplyr::select(pg_protein_accessions,
+                Gene,
+                eg_modified_sequence,
+                pep_stripped_sequence,
+                Sequence,
+                Length,
+                start,
+                end,
+                aa_before,
+                last_aa,
+                aa_after,
+                pep_nr_of_missed_cleavages,
+                pep_is_proteotypic) %>%
+  unique()
+
+
+# Annotate missingness based on time point 0
+
+lip_missingness = lip_filtered_uniprot %>%
+    protti::assign_missingness(
+      sample = sample,
+      condition = r_condition,
+      grouping = eg_prec_id,
+      intensity = normalised_intensity_log2,
+      ref_condition = "0_min",
+      completeness_MAR = 0.7,
+      completeness_MNAR = 0.2,
+      retain_columns = c(Gene,
+                         pg_protein_accessions, 
+                         r_condition,
+                         sample,
+                         eg_modified_sequence)
+    )
+
+
+lip_na_filtered = lip_missingness %>%
+  dplyr::filter(is.na(normalised_intensity_log2) == FALSE) %>%
+  unique()
+
+
+
+# Summarization of precursor quantities to peptide level
+
+
+lip_pep = lip_na_filtered  %>%
+  dplyr::mutate(missingness = "complete") %>%
+  dplyr::group_by(sample, comparison, eg_modified_sequence) %>%
+  dplyr::mutate(pep_int = log2(sum(2^normalised_intensity_log2))) %>%
+  dplyr::filter(is.na(pep_int) == FALSE) %>%
+  dplyr::mutate(pep_imputed = FALSE) %>%
+  dplyr::ungroup() %>%
+  dplyr::select(Gene,
+                pg_protein_accessions, 
+                eg_modified_sequence, 
+                sample,
+                r_condition, 
+                comparison, 
+                pep_int, 
+                pep_imputed, 
+                missingness) %>%
+  unique()  %>%
+  dplyr::group_by(comparison, r_condition, eg_modified_sequence) %>%
+  dplyr::mutate(pep_n_obs = n()) %>%
+  dplyr::ungroup() %>%
+  dplyr::filter(pep_n_obs >= 3) 
+
+
+fwrite(lip_pep, file = paste0("./Temporal_LiP/Temporal_LiP/GB04_Preprocessed_data/",Run,"_",Experiment_Name,"_LiP_Summarized_Peptides.csv"))
+```
+QC of LiP data
+```{r}
+# Quality Control
+# Run Intensities
+
+protti::qc_intensity_distribution(data = lip_normalised,
+                          sample = sample,
+                          grouping = eg_prec_id,
+                          intensity_log2 = intensity_log2,
+                          plot_style = "boxplot") +
+  labs(title = "Log2 of raw precursor intensity")
+
+
+
+protti::qc_median_intensities(data = lip_normalised,
+                      sample = sample,
+                      grouping = eg_prec_id,
+                      intensity = intensity_log2) +
+  labs(title = "Log2 of raw precursor intensity")
+
+
+
+protti::qc_intensity_distribution(data = lip_normalised,
+                          sample = sample,
+                          grouping = eg_prec_id,
+                          intensity_log2 = normalised_intensity_log2,
+                          plot_style = "boxplot") +
+  labs(title = "Log2 normalised precursor intensity")
+
+# CV
+
+protti::qc_cvs(lip_normalised,
+       grouping = eg_prec_id,
+       condition = r_condition,
+       intensity = fg_ms2raw_quantity,
+       plot = TRUE,
+       plot_style = "violin")+
+  labs(title = "CV of raw precursor intensity")
+
+protti::qc_cvs(lip_normalised,
+       grouping = eg_prec_id,
+       condition = r_condition,
+       intensity = fg_ms2raw_quantity,
+       plot = F)
+
+protti::qc_cvs(lip_normalised,
+       grouping = eg_prec_id,
+       condition = r_condition,
+       intensity = normalised_intensity,
+       plot = TRUE,
+       plot_style = "violin")  +
+  labs(title = "CV of normalised intensity")
+
+protti::qc_cvs(lip_normalised,
+       grouping = eg_prec_id,
+       condition = r_condition,
+       intensity = normalised_intensity,
+       plot = F)
+
+
+# Protein IDs
+
+protti::qc_ids(data = lip_filtered_uniprot,
+       sample = sample,
+       grouping = pg_protein_accessions,
+       intensity = normalised_intensity,
+       condition = r_condition, 
+       title = "Protein group identifications",
+       plot = TRUE)
+
+protti::qc_ids(data = lip_filtered_uniprot,
+       sample = sample,
+       grouping = eg_modified_sequence,
+       intensity = normalised_intensity,
+       condition = r_condition, 
+       title = "Mod peptide identifications",
+       plot = TRUE)
+
+# Peptide type intensity
+
+protti::qc_peptide_type(data = lip_filtered_uniprot,
+                sample = sample, 
+                peptide = eg_prec_id, 
+                pep_type = pep_type, 
+                method = "intensity", 
+                intensity = fg_ms2raw_quantity, 
+                plot = TRUE, 
+                interactive = FALSE) +
+  labs(title = "Pecursor type intensity")
+
+
+# Peptide type count
+
+protti::qc_peptide_type(data = lip_filtered_uniprot,
+                sample = sample, 
+                peptide = eg_prec_id, 
+                pep_type = pep_type, 
+                method = "count", 
+                plot = TRUE, 
+                interactive = FALSE) +
+  labs(title = "Precursor type count")
+
+# Charge states
+
+protti::qc_charge_states(data = lip_filtered_uniprot, 
+                 sample = sample, 
+                 grouping = eg_prec_id, 
+                 charge_states = fg_charge, 
+                 method = "intensity",
+                 intensity = fg_ms2raw_quantity, 
+                 plot = TRUE) +
+  labs(title = "Precursor raw charge state intensity") 
+
+
+
+
+#Missed cleavages
+
+protti::qc_missed_cleavages(data = lip_normalised, 
+                    sample = sample, 
+                    grouping = eg_prec_id, 
+                    missed_cleavages = pep_nr_of_missed_cleavages, 
+                    method = "intensity",
+                    intensity = fg_ms2raw_quantity, 
+                    plot = TRUE) +
+  labs(title = "Precursor missed cleavages raw intensity")
+
+
+# Sequence coverage
+
+protti::qc_sequence_coverage(data = lip_filtered_uniprot,
+                     protein_identifier = pg_protein_accessions,
+                     coverage = coverage) +
+  labs(title = "Protein coverage after filtering")
+
+
+# Data completeness
+
+protti::qc_data_completeness(data = lip_normalised,
+                     sample = sample,
+                     grouping = eg_prec_id,
+                     intensity = fg_ms2raw_quantity,
+                     plot = TRUE) +
+  labs(title = "Precursor completeness before filtering")
+
+protti::qc_data_completeness(data = lip_filtered_uniprot,
+                     sample = sample,
+                     grouping = eg_prec_id,
+                     intensity = fg_ms2raw_quantity,
+                     plot = TRUE) +
+  labs(title = "Precursor completeness after filtering")
+
+
+# Log2 intensity distribution
+
+protti::qc_intensity_distribution(data = lip_normalised,
+                          grouping = eg_prec_id,
+                          intensity_log2 = intensity_log2,
+                          plot_style = "histogram")  +
+  labs(title = "Distribution of log2 raw intensity")
+
+
+protti::qc_intensity_distribution(data = lip_normalised,
+                          grouping = eg_prec_id,
+                          intensity_log2 = normalised_intensity_log2,
+                          plot_style = "histogram") +
+  labs(title = "Distribution of log2 raw intensity")
+
+# PCA
+
+protti::qc_pca(data = lip_normalised,
+       sample = sample,
+       grouping = eg_prec_id,
+       intensity = fg_ms2raw_quantity,
+       condition = r_condition,
+       digestion = "NULL",
+       plot_style = "scree"
+) +
+labs(title = "PCA plot of raw precursor intensities")
+
+protti::qc_pca(data = lip_normalised,
+       sample = sample,
+       grouping = eg_prec_id,
+       intensity = fg_ms2raw_quantity,
+       condition = r_condition,
+       components = c("PC1", "PC2"), 
+       plot_style = "pca"
+) +
+labs(title = "PCA plot of raw precursor intensities")
+
+
+protti::qc_pca(data = lip_normalised,
+       sample = sample,
+       grouping = eg_prec_id,
+       intensity = normalised_intensity_log2,
+       condition = r_condition,
+       digestion = "NULL",
+       plot_style = "scree"
+) +
+  labs(title = "Scree plot of normalised log2 precursor intensities")
+
+protti::qc_pca(data = lip_normalised,
+       sample = sample,
+       grouping = eg_prec_id,
+       intensity = normalised_intensity_log2,
+       condition = r_condition,
+       components = c("PC1", "PC2"), 
+       plot_style = "pca"
+)  +
+labs(title = "PCA plot of  normalised log2 precursor  intensities")
+
+
+
+
+# Ranked intensities
+
+protti::qc_ranked_intensities(
+  data = lip_normalised,
+  sample = sample,
+  grouping = eg_prec_id,
+  intensity_log2 = normalised_intensity_log2,
+  plot = TRUE,
+) +
+  labs(title = "Ranked normalised precursor intensities")
+
+# Correlation
+
+protti::qc_sample_correlation(data = lip_normalised,
+                      sample = sample,
+                      grouping = eg_prec_id,
+                      intensity_log2 = normalised_intensity_log2,
+                      condition = r_condition)
+
+
+
+
+#Number peptides in all conditions:
+
+
+lip_pep_per_time = lip_pep %>%
+  dplyr::select(r_condition, eg_modified_sequence) %>%
+  unique() %>%
+  group_by(eg_modified_sequence) %>%
+  mutate(count = n()) %>%
+  ungroup()
+
+lip_pep_per_time %>%
+  dplyr::select(count, eg_modified_sequence) %>%
+  unique() %>%
+  dplyr::select(-eg_modified_sequence) %>%
+  group_by(count) %>%
+  mutate(n = n()) %>%
+  unique()
+
+
+lip_pep_per_time %>%
+  ggplot(aes(count)) +
+  geom_histogram(bins = 12)
+
+# rm(lip_normalised)
+# rm(lip_na_filtered)
+# rm(lip_filtered_uniprot)
+# rm(lip_missingness)
+# 
+# gc()
+```
+
+Trp fraction Normalization and Summarization
+```{r}
+raw_trp = read_protti("./Temporal_LiP/Temporal_LiP/GB04_rawfiles/20230627_090111_230623_fehra_GB04_Trp_Report.xls") %>%
+  dplyr::mutate(sample = paste(r_condition, "Trp", r_replicate, sep = "_")) %>%
+  dplyr::select(r_condition,
+                sample,
+                pg_protein_accessions,
+                pg_qvalue,
+                pg_quantity,
+                pep_is_proteotypic,
+                pep_nr_of_missed_cleavages,
+                pep_stripped_sequence,
+                eg_is_decoy,
+                eg_modified_sequence,
+                eg_qvalue,
+                fg_ms2raw_quantity,
+                fg_charge) %>%
+  dplyr::filter(r_condition != "15_min") 
+
+
+# Clean tryptic data
+
+# For QC and peptide centric analysis
+
+trp_qc = raw_trp %>%
+  dplyr::filter(eg_qvalue <= 0.01) %>%
+  dplyr::filter(fg_ms2raw_quantity >= 10) %>%
+  dplyr::mutate(eg_prec_id = paste(eg_modified_sequence, fg_charge, sep ="")) %>%
+  dplyr::mutate(intensity_log2 = log2(fg_ms2raw_quantity)) %>%
+  normalise(sample, intensity_log2, method = "median") %>%
+  dplyr::mutate(normalised_intensity = 2^normalised_intensity_log2) %>%
+  dplyr::filter(pep_is_proteotypic == TRUE) %>%
+  dplyr::left_join(uniprot, by = "pg_protein_accessions") %>%
+  protti::find_peptide(protein_sequence = Sequence,
+               peptide_sequence = pep_stripped_sequence) %>%
+  protti::assign_peptide_type(aa_before = aa_before,
+               last_aa = last_aa, 
+               aa_after = aa_after)
+
+# Filter & Normalise data
+
+trp_filtered = raw_trp %>%
+  dplyr::select(sample, r_condition, pg_protein_accessions, pg_quantity, pg_qvalue) %>%
+  dplyr::filter(pg_qvalue <= 0.01) %>%
+  dplyr::mutate(pg_log2_intensity = log2(pg_quantity)) %>%
+  protti::normalise(sample, pg_log2_intensity, method = "median") %>%
+  unique()
+
+# Assign missingness 
+
+trp_missingness =  trp_filtered %>%
+    protti::assign_missingness(
+      sample = sample,
+      condition = r_condition,
+      grouping = pg_protein_accessions,
+      intensity = normalised_intensity_log2,
+      ref_condition = "0_min",
+      completeness_MAR = 0.7,
+      completeness_MNAR = 0.25,
+      retain_columns = c(pg_protein_accessions,
+                         pg_log2_intensity,
+                         r_condition)
+      )
+
+# Summarize data
+
+trp_na_filtered = trp_missingness %>%
+  dplyr::mutate(pg_protein_accessions = str_split(pg_protein_accessions, ";")) %>%
+  unnest(pg_protein_accessions) %>%
+  dplyr::filter(is.na(normalised_intensity_log2) == FALSE) %>%
+  dplyr::filter(is.na(missingness) == FALSE) %>%
+  dplyr::group_by(r_condition, comparison, pg_protein_accessions) %>%
+  dplyr::mutate(n_prot = n()) %>%
+  dplyr::filter(n_prot >= 3) %>%
+  dplyr::ungroup() %>%
+  dplyr::left_join(uniprot, by  = "pg_protein_accessions")
+
+
+
+fwrite(trp_na_filtered, file = paste0("./Temporal_LiP/Temporal_LiP/GB04_Preprocessed_data/",Run,"_",Experiment_Name,"_Trp_Summarized_Proteins.csv"))
+
+```
+
+QC of Trp Data
+```{r}
+# Quality Control
+
+# Run Intensities
+
+protti::qc_intensity_distribution(data = trp_qc,
+                          sample = sample,
+                          grouping = eg_prec_id,
+                          intensity_log2 = intensity_log2,
+                          plot_style = "boxplot") +
+  labs(title = "Log2 of raw precursor intensity")
+
+
+protti::qc_median_intensities(data = trp_qc,
+                      sample = sample,
+                      grouping = eg_prec_id,
+                      intensity = intensity_log2) +
+  labs(title = "Log2 of raw precursor intensity")
+
+
+
+# CV
+
+protti::qc_cvs(trp_filtered,
+       grouping = pg_protein_accessions,
+       condition = r_condition,
+       intensity = pg_quantity,
+       plot = TRUE,
+       plot_style = "violin")+
+  labs(title = "CV of protein intensity")
+
+
+protti::qc_cvs(trp_filtered,
+       grouping = pg_protein_accessions,
+       condition = r_condition,
+       intensity = pg_quantity,
+       plot = FALSE)
+
+
+# Protein IDs
+
+protti::qc_ids(data = trp_filtered,
+       sample = sample,
+       grouping = pg_protein_accessions,
+       intensity = pg_log2_intensity,
+       condition = r_condition, 
+       title = "Protein identifications per sample",
+       plot = TRUE)
+
+
+
+# Peptide type intensity
+
+protti::qc_peptide_type(data = trp_qc,
+                sample = sample, 
+                peptide = eg_prec_id, 
+                pep_type = pep_type, 
+                method = "intensity", 
+                intensity = fg_ms2raw_quantity, 
+                plot = TRUE, 
+                interactive = FALSE) +
+  labs(title = "Pecursor type intensity")
+
+
+# Peptide type count
+
+protti::qc_peptide_type(data = trp_qc,
+                sample = sample, 
+                peptide = eg_prec_id, 
+                pep_type = pep_type,
+                intensity = fg_ms2raw_quantity,
+                method = "count", 
+                plot = TRUE, 
+                interactive = FALSE)+
+  labs(title = "Precursor type count")
+
+# Charge states
+
+protti::qc_charge_states(data = trp_qc, 
+                 sample = sample, 
+                 grouping = eg_prec_id, 
+                 charge_states = fg_charge, 
+                 method = "intensity",
+                 intensity = fg_ms2raw_quantity, 
+                 plot = TRUE)+
+  labs(title = "Precursor raw charge state intensity")
+
+
+#Missed cleavages
+
+protti::qc_missed_cleavages(data = trp_qc, 
+                    sample = sample, 
+                    grouping = eg_prec_id, 
+                    missed_cleavages = pep_nr_of_missed_cleavages, 
+                    method = "intensity",
+                    intensity = fg_ms2raw_quantity, 
+                    plot = TRUE)+
+  labs(title = "Precursor missed cleavages raw intensity")
+
+
+# Peak width
+
+# Data completeness
+
+protti::qc_data_completeness(data = trp_qc,
+                     sample = sample,
+                     grouping = eg_prec_id,
+                     intensity = fg_ms2raw_quantity,
+                     plot = TRUE) +
+  labs(title = "Precursor completeness before filtering")
+
+protti::qc_data_completeness(data = trp_na_filtered,
+                     sample = sample,
+                     grouping = pg_protein_accessions,
+                     intensity = normalised_intensity_log2,
+                     plot = TRUE) +
+  labs(title = "Protein completeness after filtering")
+
+# Log2 intensity distribution
+
+
+protti::qc_intensity_distribution(data = trp_filtered,
+                          grouping = pg_protein_accessions,
+                          intensity_log2 = pg_log2_intensity,
+                          plot_style = "histogram") +
+  labs(title = "Distribution of log2 spectronaut protein intensity")
+
+protti::qc_intensity_distribution(data = trp_filtered,
+                          grouping = pg_protein_accessions,
+                          intensity_log2 = normalised_intensity_log2,
+                          plot_style = "histogram")+
+  labs(title = "Distribution of log2 normalised protein intensity")
+# PCA
+
+# on ms2 raw precursor level
+protti::qc_pca(data = trp_qc,
+       sample = sample,
+       grouping = eg_prec_id,
+       intensity = intensity_log2,
+       condition = r_condition,
+       digestion = "NULL",
+       plot_style = "scree"
+)+
+labs(title = "Scree plot of raw precursor intensities")
+
+
+protti::qc_pca(data = trp_qc,
+       sample = sample,
+       grouping = eg_prec_id,
+       intensity = intensity_log2,
+       condition = r_condition,
+       components = c("PC1", "PC2"), 
+       plot_style = "pca"
+)+
+labs(title = "PCA plot of raw precursor intensities")
+
+
+
+# PCA on protein group level
+
+protti::qc_pca(data = trp_na_filtered,
+       sample = sample,
+       grouping = pg_protein_accessions,
+       intensity = normalised_intensity_log2 ,
+       condition = r_condition,
+       digestion = "NULL",
+       plot_style = "scree"
+)+
+  labs(title = "Scree plot of normalised log2 protein intensities")
+
+
+protti::qc_pca(data = trp_na_filtered,
+       sample = sample,
+       grouping = pg_protein_accessions,
+       intensity = normalised_intensity_log2,
+       condition = r_condition,
+       components = c("PC1", "PC2"), 
+       plot_style = "pca"
+)+
+  labs(title = "PCA plot of normalised log2 protein intensities")
+
+
+
+
+# Ranked intensities
+
+protti::qc_ranked_intensities(
+  data = trp_filtered,
+  sample = sample,
+  grouping = pg_protein_accessions,
+  intensity_log2 = pg_log2_intensity,
+  plot = TRUE,
+) +
+labs(title = "Ranked normalised precursor intensities")
+
+# Correlation
+
+
+protti::qc_sample_correlation(data = trp_filtered,
+                      sample = sample,
+                      grouping = pg_protein_accessions,
+                      intensity_log2 = normalised_intensity_log2 ,
+                      condition = r_condition)
+```
+
+
+Calculation of differential abundances and correction for protein abundance changes
+```{r}
+
+diff_abundance_lip  = lip_pep %>%
+    protti::calculate_diff_abundance(
+      sample = sample,
+      condition = r_condition,
+      grouping = eg_modified_sequence,
+      intensity_log2 = pep_int,
+      missingness = missingness,
+      comparison = comparison,
+      method = "t-test",
+      retain_columns = c(Gene,
+                         pg_protein_accessions)
+  ) %>%
+  dplyr::filter(is.na(std_error) == FALSE) %>%
+  mutate(time = gsub("_min_vs_0_min","", comparison))
+
+
+diff_abundance_trp = trp_na_filtered %>%
+    protti::calculate_diff_abundance(
+      sample = sample,
+      condition = r_condition,
+      grouping = pg_protein_accessions,
+      intensity_log2 = normalised_intensity_log2,
+      missingness = missingness,
+      comparison = comparison,
+      method = "t-test",
+      retain_columns = c(Gene)
+  ) %>%
+  dplyr::filter(is.na(std_error) == FALSE) %>%
+  mutate(time = gsub("_min_vs_0_min","", comparison))
+
+
+# Adjustment according to MSstats PTM
+
+adj_abundance = diff_abundance_lip %>%
+  dplyr::select(-pval, -adj_pval) %>%
+  unique() %>%
+  dplyr::inner_join(diff_abundance_trp %>%
+              dplyr::select(pg_protein_accessions, time, std_error, diff, n_obs) %>%
+              unique(),
+            by = c("pg_protein_accessions", "time"), suffix = c("_pep","_prot")) %>%
+  dplyr::mutate(adj_diff = diff_pep-diff_prot) %>%
+  dplyr::mutate(adj_std_error = sqrt(std_error_pep**2 + std_error_prot**2)) %>%
+  dplyr::mutate(numer = (std_error_pep**2 + std_error_prot**2)**2) %>%
+  dplyr::mutate(denom = (std_error_pep**4/(n_obs_pep-2) + std_error_prot**4/(n_obs_prot-2))) %>%
+  dplyr::mutate(df = numer/denom) %>%
+  dplyr::mutate(tval = adj_diff/adj_std_error) %>%
+  dplyr::mutate(pval = 2*stats::pt(abs(tval), df, lower.tail = FALSE)) %>%
+  dplyr::group_by(time) %>%
+  dplyr::mutate(p.adj = p.adjust(pval, method = "BH")) %>%
+  dplyr::ungroup()
+
+
+```
+
+Export of differential abundance tables
+```{r}
+fwrite(diff_abundance_lip, file = paste0("./Temporal_LiP/GB04_Preprocessed_data/",Run,"_",Experiment_Name,"_LiP_DifferentialAbundance.csv"))
+fwrite(diff_abundance_trp, file = paste0("./Temporal_LiP/GB04_Preprocessed_data/",Run,"_",Experiment_Name,"_Trp_DifferentialAbundance.csv"))
+fwrite(adj_abundance, file = paste0("./Temporal_LiP/GB04_Preprocessed_data/",Run,"_",Experiment_Name,"_MSstatsAdj_DifferentialAbundance.csv"))
+fwrite(peptide_meta_data, file = paste0("./Temporal_LiP/GB04_Preprocessed_data/",Run,"_",Experiment_Name,"_LiP_PeptideMetaData.csv"))
+
+```

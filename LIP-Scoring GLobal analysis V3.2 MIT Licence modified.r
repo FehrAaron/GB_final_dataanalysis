@@ -758,9 +758,9 @@ if(length(unique(n1.df$ProteinGroups)) != 1) {
 #________________________________________________________________________________________________
 #annotate protein frequency library in comparison table
 
-### manual change by Aaron
- pfl.df = read.csv("LiPQuant_PFL.csv", sep = ";")
- colnames(pfl.df) = c("PFL.PG","PLFrequency")
+### manual change by Aaron because reading in the PFL file did not work otherwise
+pfl.df = read.csv("LiPQuant_PFL.csv", sep = ";")
+colnames(pfl.df) = c("PFL.PG","PLFrequency")
 ###
 
 n1.df <- merge(n1.df, pfl.df, by=c("PFL.PG"), all.x=TRUE, all.y=FALSE)
@@ -1192,7 +1192,7 @@ for (k in 1:(length(ProtModSeq1.v))) {
   #Plot the data
   # CHANGE Aaron: substring, otherwise name too long
   
-  pdf(paste("DRCplots/Cent-Plot-",substring(modSeq,0,170),".pdf", sep=""))
+  pdf(paste("DRCplots/Cent-Plot-",substring(modSeq,0,160),".pdf", sep=""))
   par(mar = c(7, 7, 7, 5))
   plot <- plot( r1fit.dt.temp,  broken = TRUE, ylab= " ", xlab= paste("Concentration (", concUnit, ")", sep = ""))
   title(ylab=paste(answerlog, "-response (scaled)", sep = ""), line=5)
@@ -1200,7 +1200,7 @@ for (k in 1:(length(ProtModSeq1.v))) {
   dev.off()
   
   #Plot the data
-  pdf(paste("DRCplots/Reps-Plot-",substring(modSeq,0,170),".pdf", sep=""))
+  pdf(paste("DRCplots/Reps-Plot-",substring(modSeq,0,160),".pdf", sep=""))
   par(mar = c(7, 7, 7, 5))
   plot <- plot( r1fit.dt.temp,  broken = TRUE, type = "all", ylab= " ", xlab= paste("Concentration (", concUnit, ")", sep = ""))
   title(ylab=paste(answerlog, "-response (scaled)", sep = ""), line=5)

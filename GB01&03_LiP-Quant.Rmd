@@ -1,0 +1,189 @@
+---
+title: "GB01&03_LiP-Quant"
+author: "Aaron Fehr"
+date: "2023-07-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+library(tidyverse)
+library(data.table)
+library(protti)
+library(ComplexUpset)
+library(broom)
+library(org.Hs.eg.db)
+library(RColorBrewer) 
+```
+
+Read LiP Quant Outputs and raw protein identifications
+
+```{r}
+# Outputs from LiP-Quant script (R.B)
+
+GB01_raw = fread("./LiP_Quant/230313_fehra_GB01_LiPQuant-reanalysis_conc1-7_excluded13_candidates-ModSeq-ranked.txt", header = T)
+GB03Lys_raw = fread("./LiP_Quant/230531_fehra_GB03_LiPQuantLysate_candidates-ModSeq-ranked.txt", header = T)
+GB03Mem_raw = fread("./LiP_Quant/230525_fehra_GB03_Membrane-LiPQuant_candidates-ModSeq-ranked.txt", header = T)
+
+# SN files for protein identifications
+
+GB01_proteins = read_protti("./LiP_Quant/20230427_095342_230313_fehra_GB01_LiPQuant-reanalysis_conc1-7_excluded13_MiMB_Report.xls") %>%
+  dplyr::filter(pep_is_proteotypic == T) %>%
+  dplyr::select(pg_protein_accessions, eg_modified_sequence) %>%
+  unique() %>%
+  mutate(Experiment = "GB01")
+
+GB03Lys_proteins = read_protti("./LiP_Quant/20230601_164615_230531_fehra_GB03_LiPQuantLysate_MiMB_Report.xls") %>%
+  dplyr::filter(pep_is_proteotypic == T) %>%
+  dplyr::select(pg_protein_accessions, eg_modified_sequence) %>%
+  unique() %>%
+  mutate(Experiment = "GB03_Lysate")
+  
+
+GB03Mem_proteins = read_protti("./LiP_Quant/20230530_095947_230525_fehra_GB03_Membrane-LiPQuant_MiMB_Report.xls") %>%
+  dplyr::filter(pep_is_proteotypic == T) %>%
+  dplyr::select(pg_protein_accessions, eg_modified_sequence) %>%
+  unique() %>%
+  mutate(Experiment = "GB03_Membrane")
+
+# Uniprot
+
+uniprot = read_tsv("Uniprot_human_230420.tsv") 
+
+uniprot = uniprot %>%
+  dplyr::mutate(pg_protein_accessions = Entry, Gene = `Gene Names (primary)`, Sequence, Length)
+
+# Crapome 
+
+PFL = read.csv("./LiP_Quant/LiPQuant_PFL.csv", sep = ";") %>%
+  dplyr::select(ProteinGroups = "UniProt.ID", Freq = "Frequency.of.Observation")
+
+```
+
+Did Membrane enrichment work? Did we see any targets (ID level analysis)
+
+```{r}
+
+proteins = rbind(GB01_proteins, GB03Lys_proteins, GB03Mem_proteins) %>%
+  left_join(uniprot %>%
+              dplyr::select(pg_protein_accessions, GO_CC = `Gene Ontology (cellular component)`)) %>%
+  mutate(Membrane = grepl("membrane", ignore.case = TRUE, GO_CC)) %>%
+  mutate(CellSurface = grepl("plasma membrane", ignore.case = TRUE, GO_CC))
+  
+
+
+membrane_plot = proteins %>%
+  ggplot(aes(Experiment, fill = Membrane))+
+  theme_classic() +
+  geom_bar(color = "black") +
+  scale_fill_brewer(palette = "BuPu") + 
+  labs(title = "", x = "", y = "Proteotypic Peptide IDs")
+
+membrane_plot
+
+cs_plot = proteins %>%
+  ggplot(aes(Experiment, fill = CellSurface))+
+  theme_classic() +
+  geom_bar(color = "black") +
+  scale_fill_brewer(palette = "BuPu") + 
+  labs(title = "", x = "", y = "Proteotypic Peptide IDs")
+
+cs_plot
+
+
+ggsave("./LiP_Quant/Plots/Membrane_plot.png",
+       membrane_plot,
+       width = 6,
+       height = 4)
+
+ggsave("./LiP_Quant/Plots/CS_plot.png",
+       cs_plot,
+       width = 6,
+       height = 4)
+
+# All targets from drugbank (18.07.2023) for Vortioxetine
+known_targets = c(
+  "P31645",
+  "P46098",
+  "P34969",
+  "P28222",
+  "P08908",
+  "P08588",
+  "P23975",
+  "P10635",
+  "P08684",
+  "P20815",
+  "P33261",
+  "P11712",
+  "P11509",
+  "P10632",
+  "P20813"
+)
+
+known_targets %in% proteins$pg_protein_accessions
+
+```
+
+Answer: Slightly higher number and intensity of membrane proteins; but less plasma membrane proteins! -\> why? due to difference btw human and bacterial plasma membrane?
+
+Also, no targets of Vortioxetine were found
+
+From now: Only comparison between GB01 and GB03 lysate because all of the experiments had LiP scores which were below the threshold of 2
+
+```{r}
+
+combined_prot = full_join(
+  GB01_raw %>%
+    dplyr::select(Genes, ProteinGroups, ProteinLipScore),
+  GB03Lys_raw %>%
+    dplyr::select(Genes, ProteinGroups, ProteinLipScore),
+  by = c("Genes", "ProteinGroups"),
+  suffix = c("_GB01","_GB03")) %>%
+  unique() %>%
+  left_join(PFL) %>%
+  mutate(In_Crapome = is.na(Freq) == F)
+
+
+
+combined_prot %>%
+  mutate(ProteinLipScore_GB01 = is.na(ProteinLipScore_GB01) == F) %>%
+  mutate(ProteinLipScore_GB03 = is.na(ProteinLipScore_GB03) == F) %>%
+  upset(intersect = c("ProteinLipScore_GB01", "ProteinLipScore_GB03"))+
+  labs(title = "Intesect of genes with a LiP score")
+
+
+correlation = cor(combined_prot$ProteinLipScore_GB01,combined_prot$ProteinLipScore_GB03, use = "complete")
+
+correlation_plot = combined_prot %>%
+  ggplot(aes(x = ProteinLipScore_GB01, y = ProteinLipScore_GB03, fill = In_Crapome))+
+  geom_point(shape = 21, size = 2) +
+  theme_classic() +
+  scale_fill_brewer(palette = "BuPu") +
+  labs(title = "", subtitle = paste0("Correlation = ", round(correlation,3)), x = "GB01",y="GB03", fill = "in Crapome")
+
+correlation_plot 
+
+
+ggsave("./LiP_Quant/Plots/Correlation_plot.png",
+       correlation_plot,
+       width = 6,
+       height = 4)
+
+
+combined_prot %>%
+  dplyr::filter(ProteinLipScore_GB01 >= 0.9 & ProteinLipScore_GB03 >= 0.88)
+
+
+combined_prot %>%
+  pivot_longer(cols = c("ProteinLipScore_GB01", "ProteinLipScore_GB03"), names_to = "Exp") %>%
+  separate(Exp, into = c("trash","Experiment"), sep = "_") %>%
+  ggplot(aes(value, fill = In_Crapome)) +
+  theme_classic() +
+  geom_vline(xintercept = 2, lty = 2, color = "red") +
+  scale_fill_brewer(palette = "BuPu") +
+  geom_histogram(position = "identity", alpha = 0.7, bins = 40, color = "black") +
+  facet_wrap(Experiment ~ .) +
+  labs(y = "Number of proteins in bin", x = "Protein LiP-Score", fill = "in Crapome")
+
+
+```

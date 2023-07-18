@@ -63,6 +63,7 @@ PFL = read.csv("./LiP_Quant/LiPQuant_PFL.csv", sep = ";") %>%
 Did Membrane enrichment work? Did we see any targets (ID level analysis)
 
 ```{r}
+# Combine all proteins & Annotate them using GO:Cellular Component terms 
 
 proteins = rbind(GB01_proteins, GB03Lys_proteins, GB03Mem_proteins) %>%
   left_join(uniprot %>%
@@ -71,6 +72,7 @@ proteins = rbind(GB01_proteins, GB03Lys_proteins, GB03Mem_proteins) %>%
   mutate(CellSurface = grepl("plasma membrane", ignore.case = TRUE, GO_CC))
   
 
+# Plot number of peptide IDs for annotations
 
 membrane_plot = proteins %>%
   ggplot(aes(Experiment, fill = Membrane))+
@@ -101,7 +103,9 @@ ggsave("./LiP_Quant/Plots/CS_plot.png",
        width = 6,
        height = 4)
 
+# Check whether any known targets were retrieved
 # All targets from drugbank (18.07.2023) for Vortioxetine
+
 known_targets = c(
   "P31645",
   "P46098",
@@ -131,6 +135,7 @@ Also, no targets of Vortioxetine were found
 From now: Only comparison between GB01 and GB03 lysate because all of the experiments had LiP scores which were below the threshold of 2
 
 ```{r}
+# Combine GB01 and 03_lysate, annotate based on Crapome
 
 combined_prot = full_join(
   GB01_raw %>%
@@ -143,14 +148,26 @@ combined_prot = full_join(
   left_join(PFL) %>%
   mutate(In_Crapome = is.na(Freq) == F)
 
+# Up-Set plot of overlap
+
+upset_plot = combined_prot %>%
+  mutate(GB01 = is.na(ProteinLipScore_GB01) == F) %>%
+  mutate(GB03 = is.na(ProteinLipScore_GB03) == F) %>%
+  upset(intersect = c("GB01", "GB03"))+
+  labs(title = "Intesect of proteins with a LiP score") +
+  theme_classic() +
+  labs(x = "", y = "")
+
+upset_plot 
 
 
-combined_prot %>%
-  mutate(ProteinLipScore_GB01 = is.na(ProteinLipScore_GB01) == F) %>%
-  mutate(ProteinLipScore_GB03 = is.na(ProteinLipScore_GB03) == F) %>%
-  upset(intersect = c("ProteinLipScore_GB01", "ProteinLipScore_GB03"))+
-  labs(title = "Intesect of genes with a LiP score")
+ggsave("./LiP_Quant/Plots/Upset_plot.png",
+       upset_plot,
+       width = 6,
+       height = 4)
 
+
+# Point and correlation plot of shared proteins with scorings
 
 correlation = cor(combined_prot$ProteinLipScore_GB01,combined_prot$ProteinLipScore_GB03, use = "complete")
 
@@ -170,11 +187,13 @@ ggsave("./LiP_Quant/Plots/Correlation_plot.png",
        height = 4)
 
 
+
 combined_prot %>%
   dplyr::filter(ProteinLipScore_GB01 >= 0.9 & ProteinLipScore_GB03 >= 0.88)
 
+# Histograms 
 
-combined_prot %>%
+histogram_plot = combined_prot %>%
   pivot_longer(cols = c("ProteinLipScore_GB01", "ProteinLipScore_GB03"), names_to = "Exp") %>%
   separate(Exp, into = c("trash","Experiment"), sep = "_") %>%
   ggplot(aes(value, fill = In_Crapome)) +
@@ -185,5 +204,52 @@ combined_prot %>%
   facet_wrap(Experiment ~ .) +
   labs(y = "Number of proteins in bin", x = "Protein LiP-Score", fill = "in Crapome")
 
+histogram_plot
+
+
+ggsave("./LiP_Quant/Plots/Histogram_plot.png",
+       histogram_plot,
+       width = 6,
+       height = 4)
 
 ```
+
+
+
+
+```{r}
+# Combine data
+combined_prot = rbind(GB01_raw %>%
+                        dplyr::select(Genes, ProteinGroups, ProteinLipScore) %>%
+                        mutate(Experiment = "GB01"),
+                      GB03Lys_raw %>%
+                        dplyr::select(Genes, ProteinGroups, ProteinLipScore) %>%
+                        mutate(Experiment = "GB03_lysate"),
+                      GB03Mem_raw %>%
+                        dplyr::select(Genes, ProteinGroups, ProteinLipScore) %>%
+                        mutate(Experiment = "GB03_membrane")) %>%
+  left_join(PFL) %>%
+  mutate(In_Crapome = is.na(Freq) == F)
+
+# Make wider format
+combined_prot_wide = pivot_wider(combined_prot,
+                                 values_from = "ProteinLipScore",
+                                 names_from = "Experiment")
+# 
+
+
+combined_prot = full_join(
+  GB01_raw %>%
+    dplyr::select(Genes, ProteinGroups, ProteinLipScore),
+  GB03Lys_raw %>%
+    dplyr::select(Genes, ProteinGroups, ProteinLipScore),
+  by = c("Genes", "ProteinGroups"),
+  suffix = c("_GB01","_GB03")) %>%
+  unique() %>%
+  left_join(PFL) %>%
+  mutate(In_Crapome = is.na(Freq) == F)
+```
+
+
+
+

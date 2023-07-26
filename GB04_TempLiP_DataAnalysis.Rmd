@@ -5,8 +5,6 @@ date: "2023-06-28"
 output: html_document
 ---
 
-
-
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 
@@ -27,6 +25,8 @@ library(factoextra)
 library(foreach)
 library(doParallel)
 library(e1071)
+library(dtwclust)
+
 
 organism = "org.Hs.eg.db"
 
@@ -34,19 +34,21 @@ organism = "org.Hs.eg.db"
 library(org.Hs.eg.db)
 
 ```
+
 Read in preprocessed data
+
 ```{r}
-sw_adj = fread("./GB04_Preprocessed_data/230627_1830_GB_TempLiP_MSstatsAdj_DifferentialAbundance.csv")
+sw_adj = fread("./Temporal_LiP/GB04_Preprocessed_data/230627_1830_GB_TempLiP_MSstatsAdj_DifferentialAbundance.csv")
 
-gls_adj_raw = fread("./GB04_Preprocessed_data/230628_0137_GB_TempLiP_GLS_AdjustedAbundance.csv")
+gls_adj_raw = fread("./Temporal_LiP/GB04_Preprocessed_data/230628_0137_GB_TempLiP_GLS_AdjustedAbundance.csv")
 
-# gls_adj_raw = fread("./GB04_Preprocessed_data/Exclusion_15min_GB_TempLiP_GLS_AdjustedAbundance.csv")
-
-pep_metadata = fread("./GB04_Preprocessed_data/230627_1830_GB_TempLiP_LiP_PeptideMetaData.csv")
+pep_metadata = fread("./Temporal_LiP/GB04_Preprocessed_data/230627_1830_GB_TempLiP_LiP_PeptideMetaData.csv")
 
 uniprot = fread("Uniprot_human_230420.tsv")
 ```
+
 Data wrangling and make time series data frame
+
 ```{r}
 gls_adj = gls_adj_raw %>%
   left_join(pep_metadata) %>%
@@ -84,12 +86,17 @@ gls_time = rbind(
   mutate(time_num = as.numeric(gsub("_min","",time))) %>%
   mutate(max_est = max(abs(estimate))) %>%
   mutate(min_adj_pval = min(adj_pval)) %>%
-  mutate(sig = adj_pval <= 0.05 & max_est >= 1) %>%
+  mutate(sig = adj_pval <= 0.05 & abs(estimate) >= 1) %>%
   mutate(n_sig = sum(sig)) %>%
   mutate(zscore = scale(estimate, center = TRUE, scale = TRUE)) %>%
   mutate(max_min_score = (estimate - min(estimate))/(max(estimate)-min(estimate))) %>%
   arrange(eg_modified_sequence, time_num) %>%
-  mutate(adjecent_sig = max(cumsum(sig * lag(sig, default = 0)) + 1)) %>%
+  mutate(adjecent_sig = max(sig) * (max(cumsum(sig * lag(sig, default = 0))) +1)) %>%
+  ungroup() %>%
+  group_by(pg_protein_accessions, time) %>%
+  mutate(n_sig_per_prot = sum(sig)) %>%
+  mutate(n_tot = n()) %>%
+  mutate(rel_sig_per_prot = n_sig_per_prot/n_tot) %>%
   ungroup()
 
 
@@ -102,8 +109,9 @@ gls_time = rbind(
 # max min normalization
 
 gls_time_wide = gls_time %>%
-  pivot_wider(id_cols = c("Gene","pg_protein_accessions", "eg_modified_sequence","adjecent_sig"), values_from = c("max_min_score"), names_from = "time") %>%
-  dplyr::filter(adjecent_sig >= 2)
+  dplyr::filter(adjecent_sig >= 2) %>%
+  dplyr::filter(n_tot > 1)%>%
+  pivot_wider(id_cols = c("Gene","pg_protein_accessions", "eg_modified_sequence","adjecent_sig"), values_from = c("max_min_score"), names_from = "time") 
 
 
 gls_time %>%
@@ -115,6 +123,7 @@ gls_time %>%
 ```
 
 Comparison with SW correction
+
 ```{r}
 gls_adj %>%
   group_by(time, eg_modified_sequence)  %>%
@@ -144,11 +153,13 @@ test %>%
 
 cor(test$estimate, test$adj_diff)
 ```
+
 Hierarchical Clustering
+
 ```{r}
 # Parameters to test:
 
-k_clusters = 30
+k_clusters = 50
 
 # Make cluster data
 cluster_data_lip = gls_time_wide[5:ncol(gls_time_wide)]
@@ -300,9 +311,79 @@ hc_call %>%
   arrange(prot_per_cluster)
 
 
+
+ts_cluster_mm_plot = lip_hc_clustered %>%
+  dplyr::filter(obs_per_cluster >= 50) %>%
+  ggplot(aes(x = time_num, y = max_min_score, group = eg_modified_sequence)) +
+  theme_bw()+
+  geom_line(alpha = 0.2)+
+  geom_line(aes(x = time_num, y = maxmin_centroid, color = "red")) +
+  geom_point(aes(x = time_num, y = maxmin_centroid, color = "red")) +
+  theme(axis.text.x = element_text(hjust = 1, angle = 45)) +
+  facet_grid(. ~ clusters)+
+  labs(title = "", x = "", y = "Max-Min normalised fold-changes")+
+  guides(color="none")
+
+ts_cluster_mm_plot
+
+
+
+ggsave("./Temporal_LiP/GB04_AnalysisOutput/GB04_plots/ts_cluster_mm_plot.png",
+       ts_cluster_mm_plot,
+       height = 4,
+       width = 8)
+
+```
+
+DTW clustering:
+
+```{r}
+dtw_cluster = tsclust(cluster_data_lip, k = 10)
+
+ts_clusters = attr(dtw_cluster, "cluster")
+
+
+
+
+
+
+
+##
+ts_clustered = cbind(gls_time_wide, ts_clusters) %>%
+  as.data.frame() %>%
+  dplyr::select(eg_modified_sequence, ts_clusters) %>%
+  left_join(gls_time) %>%
+  group_by(ts_clusters, time) %>%
+  mutate(obs_per_cluster = n()) %>%
+  mutate(est_centroid = mean(estimate)) %>%
+  mutate(zscore_centroid = mean(zscore)) %>%
+  mutate(maxmin_centroid = mean(max_min_score)) %>%
+  ungroup()
+
+ts_clustered %>%
+  dplyr::select(obs_per_cluster, ts_clusters) %>%
+  unique() %>%
+  ggplot(aes(obs_per_cluster)) +
+  geom_histogram(bins = 300) +
+  geom_vline(xintercept = 2)
+
+
+
+# time series dat
+
+ts_clustered %>%
+  dplyr::filter(obs_per_cluster >= 40) %>%
+  ggplot(aes(x = time_num, y = max_min_score, group = eg_modified_sequence)) +
+  theme_bw()+
+  geom_line()+
+  geom_line(aes(x = time_num, y = maxmin_centroid, color = "red")) +
+  geom_point(aes(x = time_num, y = maxmin_centroid, color = "red")) +
+  facet_grid(. ~ ts_clusters)+
+  labs(title = "Time scale clusters, z score")
 ```
 
 Fuzzy c-means clustering:
+
 ```{r}
 set.seed(1432)
 # fuzzy c-means clustering
@@ -375,7 +456,9 @@ lip_fc_clustered %>%
 fviz_cluster(list(data = cluster_data_lip, axes = c(1,2),geom = c("point"), cluster = fcm_clusters))
 
 ```
+
 Correlation based clustering
+
 ```{r}
 # Pairwise correlation between samples (columns)
 cols.cor <- cor(cluster_data_lip, use = "pairwise.complete.obs", method = "pearson")
@@ -396,7 +479,6 @@ pheatmap(
 )
 ```
 
-
 CURE clustering
 
 ```{python}
@@ -407,8 +489,8 @@ cure_instance = cure(cluster_data_lip, 3);
 
 ```
 
-DBSCAN
--> didnt work well
+DBSCAN -\> didnt work well
+
 ```{r}
 library(fpc)
 set.seed(123)
@@ -444,9 +526,8 @@ plot(lip_dbscan_clustered, cluster_data_lip, main = "DBScan")
 
 ```
 
-
-
 GO-Enrichment of clusters
+
 ```{r}
 
 #GO over representation analysis for clusters:
@@ -578,5 +659,3 @@ for (i in cluster){
 
 
 ```
-
-

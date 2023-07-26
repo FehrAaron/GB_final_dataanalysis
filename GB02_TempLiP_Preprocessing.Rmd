@@ -59,9 +59,11 @@ library(vsn)
 Read in general stuff
 ```{r}
 # Set experiment name:
-Experiment_Name = "GB04_TempLiP"
+Experiment_Name = "GB02_TempLiP"
 Run = format(Sys.time(), "%y%m%d_%H%M")
-Run = "Exclusion_15min"
+
+print(Run)
+
 
 uniprot = read_tsv("Uniprot_human_230420.tsv") 
 
@@ -74,7 +76,7 @@ LiP Normalization and summarization to Peptide Level
 ```{r}
 # Read in raw data
 
-raw_lip = read_protti("./Temporal_LiP/Temporal_LiP/GB04_rawfiles/20230627_085946_230609_fehra_GB04_LiP_excluded_Report.xls") %>%
+raw_lip1 = read_protti("./Temporal_LiP/GB02_rawfiles/20230412_151616_230404_fehra_GB02_LiP_Report.csv") %>%
   dplyr::select(r_condition,
                 r_file_name,
                 r_replicate,
@@ -89,7 +91,21 @@ raw_lip = read_protti("./Temporal_LiP/Temporal_LiP/GB04_rawfiles/20230627_085946
                 eg_apex_rt,
                 eg_qvalue,
                 fg_ms2raw_quantity,
-                fg_charge) %>%
+                fg_charge) 
+
+# preliminary until I have reanalysed the data in SN.
+
+raw_lip = raw_lip1 %>%
+  dplyr::filter(grepl("Vort", r_condition) == T | 
+                grepl("DMSO_30",r_condition) == T) %>%
+  mutate(r_condition = case_when(
+    r_condition == "DMSO_30" ~ "Vort_0",
+    r_condition == "Vort_30" ~ "trash_6 0",
+    r_condition == "Vort_60" ~ "trash_30",
+    TRUE ~ r_condition
+  )) %>%
+  separate(r_condition, into = c("trash","r_condition"), sep = "_") %>%
+  mutate(r_condition = paste0(r_condition, "_min")) %>%
   dplyr::mutate(sample = paste(r_condition, "LiP", r_replicate, sep = "_")) 
 
 # Normalisation
@@ -105,6 +121,7 @@ lip_normalised = raw_lip %>%
 
 
 rm(raw_lip)
+rm(raw_lip1)
 
 # Filtering for proteotypicity
 # Joining with Uniprot data and calculation of peptide statistics
@@ -114,7 +131,6 @@ lip_filtered_uniprot = lip_normalised %>%
   dplyr::filter(pep_is_proteotypic == 1) %>%
   dplyr::left_join(uniprot,
             by = "pg_protein_accessions") %>%
-  dplyr::filter(pg_protein_accessions != "Q99550") %>% # some issue with this protein sequence; 
   protti::find_peptide(protein_sequence = Sequence,
                peptide_sequence = pep_stripped_sequence) %>%
   protti::assign_peptide_type(aa_before = aa_before,
@@ -191,7 +207,9 @@ lip_pep = lip_na_filtered  %>%
   dplyr::filter(pep_n_obs >= 3) 
 
 
-fwrite(lip_pep, file = paste0("./Temporal_LiP/Temporal_LiP/GB04_Preprocessed_data/",Run,"_",Experiment_Name,"_LiP_Summarized_Peptides.csv"))
+fwrite(lip_pep, file = paste0("./Temporal_LiP/GB02_Preprocessed_data/",Run,"_",Experiment_Name,"LiP_Summarized_Peptides.csv"))
+fwrite(lip_pep, file = paste0("./Temporal_LiP/GB02_Preprocessed_data/",Run,"_",Experiment_Name,"LiP_Peptide_Metadata.csv"))
+
 ```
 QC of LiP data
 ```{r}
@@ -462,7 +480,17 @@ lip_pep_per_time %>%
 
 Trp fraction Normalization and Summarization
 ```{r}
-raw_trp = read_protti("./Temporal_LiP/Temporal_LiP/GB04_rawfiles/20230627_090111_230623_fehra_GB04_Trp_Report.xls") %>%
+raw_trp = read_protti("./Temporal_LiP/GB02_rawfiles/20230416_165343_230404_fehra_GB02_Trp_Report.csv") %>%
+  dplyr::filter(grepl("Vort", r_condition) == T | 
+                grepl("DMSO_30",r_condition) == T) %>%
+  mutate(r_condition = case_when(
+    r_condition == "DMSO_30" ~ "Vort_0",
+    r_condition == "Vort_30" ~ "trash_6 0",
+    r_condition == "Vort_60" ~ "trash_30",
+    TRUE ~ r_condition
+  )) %>%
+  separate(r_condition, into = c("trash","r_condition"), sep = "_") %>%
+  mutate(r_condition = paste0(r_condition, "_min")) %>%
   dplyr::mutate(sample = paste(r_condition, "Trp", r_replicate, sep = "_")) %>%
   dplyr::select(r_condition,
                 sample,
@@ -476,8 +504,8 @@ raw_trp = read_protti("./Temporal_LiP/Temporal_LiP/GB04_rawfiles/20230627_090111
                 eg_modified_sequence,
                 eg_qvalue,
                 fg_ms2raw_quantity,
-                fg_charge) %>%
-  dplyr::filter(r_condition != "15_min") 
+                fg_charge)
+
 
 
 # Clean tryptic data
@@ -539,7 +567,7 @@ trp_na_filtered = trp_missingness %>%
 
 
 
-fwrite(trp_na_filtered, file = paste0("./Temporal_LiP/Temporal_LiP/GB04_Preprocessed_data/",Run,"_",Experiment_Name,"_Trp_Summarized_Proteins.csv"))
+fwrite(trp_na_filtered, file = paste0("./Temporal_LiP/GB02_Preprocessed_data/",Run,"_",Experiment_Name,"_Trp_Summarized_Proteins.csv"))
 
 ```
 
@@ -809,9 +837,7 @@ adj_abundance = diff_abundance_lip %>%
 
 Export of differential abundance tables
 ```{r}
-fwrite(diff_abundance_lip, file = paste0("./Temporal_LiP/GB04_Preprocessed_data/",Run,"_",Experiment_Name,"_LiP_DifferentialAbundance.csv"))
-fwrite(diff_abundance_trp, file = paste0("./Temporal_LiP/GB04_Preprocessed_data/",Run,"_",Experiment_Name,"_Trp_DifferentialAbundance.csv"))
-fwrite(adj_abundance, file = paste0("./Temporal_LiP/GB04_Preprocessed_data/",Run,"_",Experiment_Name,"_MSstatsAdj_DifferentialAbundance.csv"))
-fwrite(peptide_meta_data, file = paste0("./Temporal_LiP/GB04_Preprocessed_data/",Run,"_",Experiment_Name,"_LiP_PeptideMetaData.csv"))
-
+fwrite(diff_abundance_lip, file = paste0("./Temporal_LiP/GB02_Preprocessed_data/",Run,"_",Experiment_Name,"_LiP_DifferentialAbundance.csv"))
+fwrite(diff_abundance_trp, file = paste0("./Temporal_LiP/GB02_Preprocessed_data/",Run,"_",Experiment_Name,"_Trp_DifferentialAbundance.csv"))
+fwrite(adj_abundance, file = paste0("./Temporal_LiP/GB02_Preprocessed_data/",Run,"_",Experiment_Name,"_MSstatsAdj_DifferentialAbundance.csv"))
 ```

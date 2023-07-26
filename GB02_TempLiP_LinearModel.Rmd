@@ -1,0 +1,196 @@
+---
+title: "GB04_LinearModel"
+author: "Aaron Fehr"
+date: "2023-06-27"
+output: html_document
+---
+**Calculate differential LiP abundance:**
+
+1.  Combine Lip and Trp data in long-format, such that there is a time, intensity and type (trp-protein intensity or lip-peptide intensity) column
+2.  Filter for presence in all conditions
+3.  For each peptide, fit a generalized linear model (because of unequal variances between peptides and proteins):
+
+intensity \~ time \* (protein or peptide)
+
+with time as factor using the estimated marginal means package and
+
+4.  Calculate estimated marginal means
+5.  Calculate differential abundance for contrasts of interest and correct for multiple comparisons using the Dunnett correction
+6.  Aggregate all values of importance (coefficients = fold changes, p values, ..)
+7.  Correct for multiple testing for each time point separately (Benjamini-Hochberg)
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(protti)
+library(broom)
+library(data.table)
+library(emmeans)
+library(nlme)
+library(foreach)
+library(doParallel)
+library(tictoc)
+```
+
+Read preprocessed data
+```{r}
+Experiment_Name = "GB02_TempLiP"
+Run = format(Sys.time(), "%y%m%d_%H%M")
+
+lip_pep = fread("./Temporal_LiP/GB02_Preprocessed_data/230717_1435_GB02_TempLiPLiP_Summarized_Peptides.csv")
+
+trp_prot = fread("./Temporal_LiP/GB02_Preprocessed_data/230717_1435_GB02_TempLiP_Trp_Summarized_Proteins.csv")
+```
+
+Make Input dataframe
+```{r}
+seq_dict = lip_pep %>%
+  dplyr::select(eg_modified_sequence, pg_protein_accessions) %>%
+  unique()
+
+# By using right join, only peptides with a corresponding protein measurement
+# are retained
+lm_raw = rbind(
+  right_join(seq_dict, trp_prot %>%
+    dplyr::select(sample, r_condition, pg_protein_accessions, intensity = normalised_intensity_log2) %>%
+      mutate(variable = "protein") %>%
+    unique(),
+    by = "pg_protein_accessions"),
+  lip_pep %>%
+    dplyr::select(eg_modified_sequence, pg_protein_accessions, sample, r_condition, intensity = pep_int) %>%
+    mutate(variable = "peptide") %>%
+    unique())
+    
+
+lm_input = lm_raw %>%
+  dplyr::select(r_condition, eg_modified_sequence, variable) %>%
+  unique() %>%
+  group_by(eg_modified_sequence) %>%
+  mutate(n_timepoints = n()) %>%
+  dplyr::filter(n_timepoints == 10) %>%
+  ungroup() %>%
+  dplyr::select(eg_modified_sequence) %>%
+  unique() %>%
+  left_join(lm_raw) %>%
+  as.data.table()
+```
+
+
+Make contrast matrix:
+
+we want to compare (Peptide - Protein) between all time points and time point 0
+
+```{r}
+levels = levels(as.factor(lm_input$r_condition))
+
+adjustment_matrix = matrix(nrow = length(levels), ncol = 2*length(levels))
+adjustment_matrix[,] = 0
+rownames(adjustment_matrix) = levels
+
+for (i in 1:length(levels)){
+  adjustment_matrix[i,i] = 1
+  adjustment_matrix[i,length(levels)+i] = -1
+}
+
+contrast_matrix = list()
+
+for(i in levels[2:length(levels)]){
+  
+  x = paste0(i, "-0_min")
+  vector = adjustment_matrix[i,] - adjustment_matrix[1,]
+  contrast_matrix[x] = list(vector)
+  
+}
+
+contrast_matrix
+```
+
+
+Run linear modelling
+
+```{r}
+set.seed(724)
+
+# Set of peptides for model fit
+peptides = unique(lm_input$eg_modified_sequence)
+
+#Error-data to append
+error_result = data.table(contrast = "none",
+                          estimate = NA,
+                          SE = NA,
+                          df = NA,
+                          t.ratio = NA,
+                          p.value = NA,
+                          eg_modified_sequence = character())
+
+# Set number of cores and initialize clusters
+num_cores = 3
+
+cl = makeCluster(num_cores)
+registerDoParallel(cl)
+
+tic("Since starting the loop")
+
+# Run parallelized foreach loop; iterating over peptides and calculating 
+# gls for each peptide. If the model does not converge using restricted maximum
+# likelihood, the modelling is repeated maximizing the log-likelihood. If this 
+# fails as well, none is written into the method column.
+
+gls_results = foreach(i = peptides, .combine = rbind, .packages = c("data.table","emmeans","nlme")) %dopar% {
+  
+  # filter data
+  lm_in = lm_input[eg_modified_sequence == i]
+
+  tryCatch({
+
+    model = gls(intensity ~ r_condition * variable, data = lm_in, weights = varIdent(form = ~ 1 | variable))
+    
+    est_marginal_means = emmeans(model, specs =  ~ r_condition * variable, data = lm_in)
+    
+    results = as.data.table(contrast(est_marginal_means, 
+                     method = contrast_matrix, 
+                     adjust = "dunnettx"))[,eg_modified_sequence := i]
+    
+    results[,method := "REML"]
+   },
+   error = function(e){
+     
+     model = gls(intensity ~ r_condition * variable, data = lm_in, method = "ML", weights = varIdent(form = ~ 1 | variable))
+     
+     est_marginal_means = emmeans(model, specs =  ~ r_condition * variable, data = lm_in)
+    
+     results = as.data.table(contrast(est_marginal_means, 
+                     method = contrast_matrix, 
+                     adjust = "dunnettx"))[,eg_modified_sequence := i]
+     
+     results[,method := "ML"]      
+     },
+     error = function(e){
+       
+       results = error_result[,eg_modified_sequence := i]
+       
+       results[,method := "none"]
+       }
+   )
+  
+}
+   
+toc()
+
+stopCluster(cl)
+
+# Correct for multiple testing using Benjamini-Hochberg
+
+adjusted_abundance_differences = gls_results %>%
+  group_by(contrast) %>%
+  mutate(adj_pval = p.adjust(p.value, method = "BH"))
+
+
+fwrite(adjusted_abundance_differences, file = paste0("./Temporal_LiP/GB02_Preprocessed_data/",Run,"_",Experiment_Name,"_GLS_AdjustedAbundance.csv"))
+
+
+```
+
+
+

@@ -44,8 +44,122 @@ gls_adj_raw = fread("./Temporal_LiP/GB04_Preprocessed_data/230628_0137_GB_TempLi
 
 pep_metadata = fread("./Temporal_LiP/GB04_Preprocessed_data/230627_1830_GB_TempLiP_LiP_PeptideMetaData.csv")
 
+prot_raw = fread("./Temporal_LiP/GB04_Preprocessed_data/230627_1830_GB_TempLiP_Trp_Summarized_Proteins.csv")
+
 uniprot = fread("Uniprot_human_230420.tsv")
 ```
+
+
+
+PROTEIN LEVEL SHIZZLE 
+```{r}
+prot_diff_abundance = prot_raw %>%
+  calculate_diff_abundance(
+    sample = sample,
+    condition = r_condition, 
+    grouping = pg_protein_accessions,
+    intensity_log2 = pg_log2_intensity,
+    missingness = missingness,
+    comparison = comparison,
+    method = "t-test",
+    retain_columns = Gene
+  ) %>%
+  separate(comparison, into = c("time","trash"), sep = "_") %>%
+  mutate(time = paste0(time,"_min"))
+  
+  
+
+prot_diff_abundance %>%
+  dplyr::filter(adj_pval <= 0.05 & abs(diff) >= 0.5)
+
+
+
+prot_time = rbind(
+  prot_diff_abundance %>%
+    dplyr::select(Gene,
+                  pg_protein_accessions,
+                  time,
+                  diff,
+                  adj_pval,
+                  std_error),
+  prot_diff_abundance %>%
+    dplyr::select(Gene,
+                  pg_protein_accessions,
+                  time,
+                  diff,
+                  adj_pval,
+                  std_error) %>%
+    mutate(time = "0_min",
+           diff = 0,
+           adj_pval = 1) %>%
+    unique()) %>%
+  group_by(pg_protein_accessions) %>%
+  mutate(time_num = as.numeric(gsub("_min","",time))) %>%
+  mutate(max_est = max(abs(diff))) %>%
+  mutate(min_adj_pval = min(adj_pval)) %>%
+  mutate(sig = adj_pval <= 0.05 & abs(diff) >= 1) %>%
+  mutate(n_sig = sum(sig)) %>%
+  mutate(zscore = scale(diff, center = TRUE, scale = TRUE)) %>%
+  arrange(pg_protein_accessions, time_num) %>%
+  mutate(adjecent_sig = max(sig) * (max(cumsum(sig * lag(sig, default = 0))) +1)) %>%
+  ungroup() %>%
+  group_by(pg_protein_accessions, time) %>%
+  mutate(n_sig_per_prot = sum(sig)) %>%
+  mutate(n_tot = n()) %>%
+  mutate(rel_sig_per_prot = n_sig_per_prot/n_tot) %>%
+  ungroup()
+```
+
+Show that something is off batch wise
+```{r}
+prot_raw %>%
+  separate(comparison, into = c("time","trash"), sep = "_") %>%
+  mutate(time = paste0(time,"_min")) %>%
+  mutate(time_num = as.numeric(gsub("_min","",time))) %>%
+  ggplot(aes(x = as.factor(time_num), y = pg_log2_intensity)) +
+  geom_boxplot()
+
+
+prot_diff_abundance %>%
+  mutate(time_num = as.numeric(gsub("_min","",time))) %>%
+  ggplot(aes(x = as.factor(time_num), y = pval)) +
+  geom_boxplot()
+
+prot_diff_abundance %>%
+  mutate(time_num = as.numeric(gsub("_min","",time))) %>%
+  ggplot(aes(x = as.factor(time_num), y = std_error)) +
+  geom_boxplot() +
+  scale_y_log10()
+
+prot_diff_abundance %>%
+  mutate(time_num = as.numeric(gsub("_min","",time))) %>%
+  ggplot(aes(x = as.factor(time_num), y = diff)) +
+  geom_boxplot()
+
+
+
+test = "HSPB"
+
+prot_time %>%
+  dplyr::filter(grepl(test,Gene) == T) %>%
+  dplyr::select(Gene) %>%
+  unique()
+
+prot_time %>%
+  dplyr::filter(grepl(test, Gene) == T) %>%
+  ggplot(aes(x = time_num, y = diff, group = pg_protein_accessions, color = Gene))+
+  geom_line() +
+  geom_ribbon(aes(ymin = diff - std_error, ymax = diff + std_error, alpha = 0.3, fill = "red")) 
+
+
+prot_diff_abundance %>%
+  group_by(time) %>%
+  arrange(pval) %>%
+  mutate(rank = row_number()) %>%
+  dplyr::filter(grepl("JUN",Gene) == T)
+```
+
+
 
 Data wrangling and make time series data frame
 
@@ -54,8 +168,6 @@ gls_adj = gls_adj_raw %>%
   left_join(pep_metadata) %>%
   mutate(time = gsub("-0_min","",contrast)) 
 
-# %>%
-#   dplyr::filter(time != "15_min")
 
 gls_time = rbind(
   gls_adj %>%
@@ -111,7 +223,7 @@ gls_time = rbind(
 gls_time_wide = gls_time %>%
   dplyr::filter(adjecent_sig >= 2) %>%
   dplyr::filter(n_tot > 1)%>%
-  pivot_wider(id_cols = c("Gene","pg_protein_accessions", "eg_modified_sequence","adjecent_sig"), values_from = c("max_min_score"), names_from = "time") 
+  pivot_wider(id_cols = c("Gene","pg_protein_accessions", "eg_modified_sequence","adjecent_sig"), values_from = c("max_min_score"), names_from = "time")
 
 
 gls_time %>%
@@ -159,10 +271,14 @@ Hierarchical Clustering
 ```{r}
 # Parameters to test:
 
-k_clusters = 50
+k_clusters = 18
 
 # Make cluster data
 cluster_data_lip = gls_time_wide[5:ncol(gls_time_wide)]
+
+
+############CHANGEEEESSS 
+# cluster_data_lip = gls_time_wide[c("0_min","30_min","60_min","180_min","360_min")]
 
 # calculate distance matrix and clusters
 
@@ -176,6 +292,7 @@ lip_hc_clustered = cbind(gls_time_wide, clusters) %>%
   as.data.frame() %>%
   dplyr::select(eg_modified_sequence, clusters) %>%
   left_join(gls_time) %>%
+  # dplyr::filter(time %in% c("0_min","30_min","60_min","180_min","360_min")) %>%
   group_by(clusters, time) %>%
   mutate(obs_per_cluster = n()) %>%
   mutate(est_centroid = mean(estimate)) %>%
@@ -656,6 +773,5 @@ for (i in cluster){
  print(paste0("No significant enrichment in cluster ",i))
   )
 }
-
 
 ```

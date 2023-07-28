@@ -76,7 +76,7 @@ LiP Normalization and summarization to Peptide Level
 ```{r}
 # Read in raw data
 
-raw_lip1 = read_protti("./Temporal_LiP/GB02_rawfiles/20230412_151616_230404_fehra_GB02_LiP_Report.csv") %>%
+raw_lip = read_protti("./Temporal_LiP/GB02_rawfiles/20230727_140214_230404_fehra_GB02_LiP_reanalysis_Report.xls") %>%
   dplyr::select(r_condition,
                 r_file_name,
                 r_replicate,
@@ -91,21 +91,7 @@ raw_lip1 = read_protti("./Temporal_LiP/GB02_rawfiles/20230412_151616_230404_fehr
                 eg_apex_rt,
                 eg_qvalue,
                 fg_ms2raw_quantity,
-                fg_charge) 
-
-# preliminary until I have reanalysed the data in SN.
-
-raw_lip = raw_lip1 %>%
-  dplyr::filter(grepl("Vort", r_condition) == T | 
-                grepl("DMSO_30",r_condition) == T) %>%
-  mutate(r_condition = case_when(
-    r_condition == "DMSO_30" ~ "Vort_0",
-    r_condition == "Vort_30" ~ "trash_6 0",
-    r_condition == "Vort_60" ~ "trash_30",
-    TRUE ~ r_condition
-  )) %>%
-  separate(r_condition, into = c("trash","r_condition"), sep = "_") %>%
-  mutate(r_condition = paste0(r_condition, "_min")) %>%
+                fg_charge) %>%
   dplyr::mutate(sample = paste(r_condition, "LiP", r_replicate, sep = "_")) 
 
 # Normalisation
@@ -121,7 +107,6 @@ lip_normalised = raw_lip %>%
 
 
 rm(raw_lip)
-rm(raw_lip1)
 
 # Filtering for proteotypicity
 # Joining with Uniprot data and calculation of peptide statistics
@@ -208,7 +193,7 @@ lip_pep = lip_na_filtered  %>%
 
 
 fwrite(lip_pep, file = paste0("./Temporal_LiP/GB02_Preprocessed_data/",Run,"_",Experiment_Name,"LiP_Summarized_Peptides.csv"))
-fwrite(lip_pep, file = paste0("./Temporal_LiP/GB02_Preprocessed_data/",Run,"_",Experiment_Name,"LiP_Peptide_Metadata.csv"))
+fwrite(peptide_meta_data, file = paste0("./Temporal_LiP/GB02_Preprocessed_data/",Run,"_",Experiment_Name,"LiP_Peptide_Metadata.csv"))
 
 ```
 QC of LiP data
@@ -480,17 +465,7 @@ lip_pep_per_time %>%
 
 Trp fraction Normalization and Summarization
 ```{r}
-raw_trp = read_protti("./Temporal_LiP/GB02_rawfiles/20230416_165343_230404_fehra_GB02_Trp_Report.csv") %>%
-  dplyr::filter(grepl("Vort", r_condition) == T | 
-                grepl("DMSO_30",r_condition) == T) %>%
-  mutate(r_condition = case_when(
-    r_condition == "DMSO_30" ~ "Vort_0",
-    r_condition == "Vort_30" ~ "trash_6 0",
-    r_condition == "Vort_60" ~ "trash_30",
-    TRUE ~ r_condition
-  )) %>%
-  separate(r_condition, into = c("trash","r_condition"), sep = "_") %>%
-  mutate(r_condition = paste0(r_condition, "_min")) %>%
+raw_trp = read_protti("./Temporal_LiP/GB02_rawfiles/20230727_135913_230404_fehra_GB02_Trp_reanalysis_Report.xls") %>%
   dplyr::mutate(sample = paste(r_condition, "Trp", r_replicate, sep = "_")) %>%
   dplyr::select(r_condition,
                 sample,

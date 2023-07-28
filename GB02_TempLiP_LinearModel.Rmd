@@ -36,11 +36,11 @@ library(tictoc)
 Read preprocessed data
 ```{r}
 Experiment_Name = "GB02_TempLiP"
-Run = format(Sys.time(), "%y%m%d_%H%M")
+Run = "230727_1441"
 
-lip_pep = fread("./Temporal_LiP/GB02_Preprocessed_data/230717_1435_GB02_TempLiPLiP_Summarized_Peptides.csv")
+lip_pep = fread("./Temporal_LiP/GB02_Preprocessed_data/230727_1441_GB02_TempLiPLiP_Summarized_Peptides.csv")
 
-trp_prot = fread("./Temporal_LiP/GB02_Preprocessed_data/230717_1435_GB02_TempLiP_Trp_Summarized_Proteins.csv")
+trp_prot = fread("./Temporal_LiP/GB02_Preprocessed_data/230727_1441_GB02_TempLiP_Trp_Summarized_Proteins.csv")
 ```
 
 Make Input dataframe

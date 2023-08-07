@@ -42,6 +42,9 @@ gls_adj_raw = fread("./Temporal_LiP/GB02_Preprocessed_data/230727_1441_GB02_Temp
 
 pep_metadata = fread("./Temporal_LiP/GB02_Preprocessed_data/230727_1441_GB02_TempLiPLiP_Peptide_Metadata.csv")
 
+lip_pep = fread("./Temporal_LiP/GB02_Preprocessed_data/230727_1441_GB02_TempLiPLiP_Summarized_Peptides.csv") %>%
+  left_join(pep_metadata)
+
 uniprot = fread("Uniprot_human_230420.tsv")
 ```
 Data wrangling and make time series data frame
@@ -447,7 +450,7 @@ n_per_cluster = rbind(
   ungroup() %>%
   arrange(x_value) %>%
   mutate(order = row_number()) %>%
-  mutate(facet = "Features/cluster")
+  mutate(facet = "Features per cluster")
 
 
 
@@ -470,7 +473,7 @@ plot
 ggsave(paste0("./Temporal_LiP/GB02_AnalysisOutput/GB02_plots/Features_per_cluster.png"),
       plot,
       height = 3,
-      width = 5)
+      width = 4)
 
 
 
@@ -503,9 +506,12 @@ ggsave(paste0("./Temporal_LiP/GB02_AnalysisOutput/GB02_plots/Features_per_cluste
 
 plot = n_per_cluster %>%
   mutate(facet = "Hierarchical clustering of peptide traces") %>%
-  ggplot(aes(x = x_value, y = value, fill = entity)) +
+  mutate(x_value = "", value = 0) %>%
+  ggplot(aes(x = x_value, y = value)) +
   geom_col(position = position_dodge(), color = "black")+
   theme_bw()+ 
+  theme(axis.ticks.x = element_blank())+
+  scale_y_continuous(limits = c(-0.25,1), breaks = c(0, 0.25, 0.50, 0.75, 1)) +
   theme(legend.position = "left",
         legend.key.size = unit(0.4, "cm"),
         legend.margin = margin(r=- 0.6, unit = "cm")) + 
@@ -515,10 +521,10 @@ plot = n_per_cluster %>%
   labs(title = " ",x = "", y = "", fill = "")+
   facet_wrap(. ~ facet, scales = "free")
 
-ggsave(paste0("./Temporal_LiP/GB02_AnalysisOutput/GB02_plots/DendroTitle.png"),
+ggsave(paste0("./Temporal_LiP/GB02_AnalysisOutput/GB02_plots/DendroTitle.jpeg"),
       plot,
       height = 3,
-      width = 4)
+      width = 3.5)
 
 ```
 
@@ -664,6 +670,7 @@ cluster = seq(1:k_clusters)
 
 for (i in cluster){
   temp_BP = GO_overrep_Lip_BP %>% 
+    mutate(Description = gsub("ubiquitin-dep","ubiquitin\n-dep", Description)) %>%
     dplyr::filter(cluster == i) %>%
     arrange(p.adjust) %>%
     mutate(rank = row_number()) %>%
@@ -672,7 +679,10 @@ for (i in cluster){
     separate(GeneRatio, into = c("n_GO","n_prot"), sep = "/") %>%
     mutate(GeneRatio = as.numeric(n_GO)/as.numeric((n_prot)))
   
-  temp_MF  = GO_overrep_LiP_MF %>% 
+  temp_MF  = GO_overrep_LiP_MF %>%
+    mutate(Description = gsub(" or o"," \nor o", Description)) %>%
+    mutate(Description = gsub("movement of ions","movement of ions\n", Description)) %>%
+    mutate(Description = gsub("pyrophosphate hydrolysis-driven proton transmembrane transporter activity","pyrophosphate hydrolysis-driven proton\ntransmembrane transporter activity", Description)) %>%
     dplyr::filter(cluster == i) %>%
     arrange(p.adjust) %>%
     mutate(rank = row_number()) %>%
@@ -696,6 +706,7 @@ for (i in cluster){
                        limits = c(0,0.05))+
       geom_col(color = "black") + 
       labs(title = paste0("GO-Enrichments for cluster ",i, " with ", n_prot, " Proteins"), y = "", x = "Gene Ratio", fill = "adj. pvalue") +
+      theme(legend.position = "left") +
       facet_wrap(GO_type ~., scales = "free_y")
   
     print(plot)
@@ -703,8 +714,8 @@ for (i in cluster){
     
     ggsave(paste0("./Temporal_LiP/GB02_AnalysisOutput/GB02_plots/AllGO/SupplementaryGO_cluster",i,".png"),
     plot,
-    height = 5,
-    width = 20)
+    height = 7.5,
+    width = 10)
     
     }
   else{
@@ -974,10 +985,121 @@ table = GO_late_response %>%
 
 fwrite(table, "./Temporal_LiP/GB02_AnalysisOutput/GO_late_supplementarytable.csv")
 
-
-
-
-
 ```
 
+Nice QC-plot for supplementary:
+```{r}
+# Coefficients of variation: 
+plot = lip_pep %>%
+  mutate(sample = gsub("min_LiP_","",sample)) %>%
+  mutate(intensity = 2^pep_int) %>%
+  qc_cvs(
+    grouping = eg_modified_sequence,
+    condition = r_condition,
+    intensity = intensity,
+    plot_style = "violin")  +
+  theme(legend.position = "none") +
+  labs(title = "Coefficients of variation of mod. peptides")
 
+
+
+plot 
+
+ggsave("./Temporal_LiP/GB02_AnalysisOutput/QC_plots/GB02_liP_CVs.png",
+       plot,
+       height = 3.5,
+       width = 10)
+
+lip_pep %>%
+  mutate(sample = gsub("min_LiP_","",sample)) %>%
+  mutate(intensity = 2^pep_int) %>%
+  qc_cvs(
+    grouping = eg_modified_sequence,
+    condition = r_condition,
+    intensity = intensity,
+    plot = F
+  )
+
+
+# Number of peptide identifications:
+
+plot = lip_pep %>%
+  mutate(sample = gsub("min_LiP_","",sample)) %>%
+  qc_ids(
+       sample = sample,
+       grouping = eg_modified_sequence,
+       intensity = pep_int,
+       condition = r_condition,
+       plot = T) +
+  theme(legend.position = "none") +
+  labs(title = "Mod. peptide identifications")
+
+plot 
+
+ggsave("./Temporal_LiP/GB02_AnalysisOutput/QC_plots/GB02_liP_IDs.png",
+       plot,
+       height = 3.5,
+       width = 10)
+
+# Peptide type:
+
+plot = lip_pep %>%
+  mutate(sample = gsub("min_LiP_","",sample)) %>%
+  assign_peptide_type(aa_before = aa_before,
+               last_aa = last_aa, 
+               aa_after = aa_after) %>%
+  qc_peptide_type(
+    sample = sample,
+    peptide = eg_modified_sequence,
+    pep_type = pep_type,
+    method = "intensity",
+    intensity = pep_int,
+    plot = T
+  ) +
+  labs(title = "Mod. peptide type intensities")
+
+plot 
+
+ggsave("./Temporal_LiP/GB02_AnalysisOutput/QC_plots/GB02_liP_pep_types.png",
+       plot,
+       height = 4,
+       width = 12)
+
+# PCA:
+
+plot = lip_pep %>%
+  qc_pca(
+    sample = sample,
+    grouping = eg_modified_sequence,
+    intensity = pep_int,
+    condition = r_condition,
+    components = c("PC1","PC2"),
+    plot_style = "pca"
+  )
+
+plot 
+
+ggsave("./Temporal_LiP/GB02_AnalysisOutput/QC_plots/GB02_liP_pca.png",
+       plot,
+       height = 5,
+       width = 10)
+
+# Hierarchical clustering
+
+plot = lip_pep %>%
+  mutate(sample = gsub("min_LiP_","",sample)) %>%
+  qc_sample_correlation(
+    sample = sample,
+    grouping = eg_modified_sequence,
+    intensity_log2 = pep_int,
+    condition = r_condition
+    )
+
+
+plot 
+
+ggsave("./Temporal_LiP/GB02_AnalysisOutput/QC_plots/GB02_liP_heatmap.png",
+       plot,
+       height = 6,
+       width = 10)
+```

@@ -31,20 +31,20 @@ GB01_proteins = read_protti("./LiP_Quant/20230427_095342_230313_fehra_GB01_LiPQu
   dplyr::filter(pep_is_proteotypic == T) %>%
   dplyr::select(pg_protein_accessions, eg_modified_sequence) %>%
   unique() %>%
-  mutate(Experiment = "GB01")
+  mutate(Experiment = "Lysate 1")
 
 GB03Lys_proteins = read_protti("./LiP_Quant/20230601_164615_230531_fehra_GB03_LiPQuantLysate_MiMB_Report.xls") %>%
   dplyr::filter(pep_is_proteotypic == T) %>%
   dplyr::select(pg_protein_accessions, eg_modified_sequence) %>%
   unique() %>%
-  mutate(Experiment = "GB03_Lysate")
+  mutate(Experiment = "Lysate 2")
   
 
 GB03Mem_proteins = read_protti("./LiP_Quant/20230530_095947_230525_fehra_GB03_Membrane-LiPQuant_MiMB_Report.xls") %>%
   dplyr::filter(pep_is_proteotypic == T) %>%
   dplyr::select(pg_protein_accessions, eg_modified_sequence) %>%
   unique() %>%
-  mutate(Experiment = "GB03_Membrane")
+  mutate(Experiment = "Membrane")
 
 # Uniprot
 
@@ -88,15 +88,16 @@ cs_plot = proteins %>%
   theme_classic() +
   geom_bar(color = "black") +
   scale_fill_brewer(palette = "BuPu") + 
-  labs(title = "", x = "", y = "Proteotypic Peptide IDs")
+  labs(title = "", x = "", y = "Proteotypic Peptide IDs") +
+  theme(legend.position="bottom")
 
 cs_plot
 
 
 ggsave("./LiP_Quant/Plots/Membrane_plot.png",
        membrane_plot,
-       width = 6,
-       height = 4)
+       width = 4,
+       height = 3)
 
 ggsave("./LiP_Quant/Plots/CS_plot.png",
        cs_plot,
@@ -126,6 +127,19 @@ known_targets = c(
 
 known_targets %in% proteins$pg_protein_accessions
 
+
+# Number of IDs:
+
+proteins %>%
+  group_by(Experiment) %>%
+  mutate(n_pep = n()) %>%
+  dplyr::select(n_pep, pg_protein_accessions) %>%
+  unique() %>%
+  mutate(n_prot = n()) %>%
+  dplyr::select(n_pep,n_prot) %>%
+  unique()
+
+
 ```
 
 Answer: Slightly higher number and intensity of membrane proteins; but less plasma membrane proteins! -\> why? due to difference btw human and bacterial plasma membrane?
@@ -137,13 +151,13 @@ Also, no targets of Vortioxetine were found
 # Combine data
 combined_prot = rbind(GB01_raw %>%
                         dplyr::select(Genes, ProteinGroups, ProteinLipScore) %>%
-                        mutate(Experiment = "GB01"),
+                        mutate(Experiment = "Lysate 1"),
                       GB03Lys_raw %>%
                         dplyr::select(Genes, ProteinGroups, ProteinLipScore) %>%
-                        mutate(Experiment = "GB03_lysate"),
+                        mutate(Experiment = "Lysate 2"),
                       GB03Mem_raw %>%
                         dplyr::select(Genes, ProteinGroups, ProteinLipScore) %>%
-                        mutate(Experiment = "GB03_membrane")) %>%
+                        mutate(Experiment = "Membrane")) %>%
   left_join(PFL) %>%
   mutate(In_Crapome = is.na(Freq) == F) %>%
   unique()
@@ -156,10 +170,10 @@ combined_prot_wide = pivot_wider(combined_prot,
 # overlap
 
 upset_plot = combined_prot_wide %>%
-  mutate(GB01 = is.na(GB01) == F) %>%
-  mutate(GB03_lysate = is.na(GB03_lysate) == F) %>%
-  mutate(GB03_membrane = is.na(GB03_membrane) == F) %>%
-  upset(intersect = c("GB01", "GB03_lysate","GB03_membrane"))+
+  mutate(`Lysate 1` = is.na(`Lysate 1`) == F) %>%
+  mutate(`Lysate 2` = is.na(`Lysate 2`) == F) %>%
+  mutate(Membrane = is.na(Membrane) == F) %>%
+  upset(intersect = c("Lysate 1", "Lysate 2","Membrane"))+
   labs(title = "Intesect of proteins with a LiP score") +
   theme_classic() +
   labs(x = "", y = "")
@@ -174,42 +188,54 @@ ggsave("./LiP_Quant/Plots/Upset_plot.png",
 
 # Correlation - point plot btw GB01 and GB03-lysate 
 
-correlation = cor(combined_prot_wide$GB01, combined_prot_wide$GB03_lysate, use = "complete")
+correlation = cor(combined_prot_wide$`Lysate 1`, combined_prot_wide$`Lysate 2`, use = "complete")
 
 
 correlation_plot = combined_prot_wide %>%
-  ggplot(aes(x = GB01, y = GB03_lysate, fill = In_Crapome))+
-  geom_point(shape = 21, size = 2) +
-  theme_classic() +
+  mutate(title = paste0("Correlation  of Protein LiP scores = ", round(correlation,3))) %>%
+  ggplot(aes(x = `Lysate 1`, y = `Lysate 2`, fill = In_Crapome))+
+  geom_point(shape = 21, size = 1.5, alpha = 0.8) +
+  theme_bw() +
+  theme(strip.background = element_blank()) +
+  theme(legend.position="none") +
   scale_fill_brewer(palette = "BuPu") +
-  labs(title = "", subtitle = paste0("Correlation = ", round(correlation,3)),  fill = "in Crapome")
+  labs(x = "LiP-Scores Lysate 1", y = "LiP-Scores Lysate 2" , title = " ") +
+  geom_vline(xintercept = 1.5, lty = 2, color = "red") +
+  geom_hline(yintercept = 1.5, lty = 2, color = "red") +
+  facet_wrap(. ~ title)
+
 
 correlation_plot 
 
 
 ggsave("./LiP_Quant/Plots/Correlation_plot.png",
        correlation_plot,
-       width = 6,
-       height = 4)
+       width = 5,
+       height = 3)
 
 # Histogram 
 
 histogram_plot = combined_prot %>%
   ggplot(aes(ProteinLipScore, fill = In_Crapome)) +
-  theme_classic() +
-  geom_vline(xintercept = 2, lty = 2, color = "red") +
+  theme_bw() +
+  theme(panel.grid = element_blank()) +
+  theme(strip.background = element_blank()) +
+  theme(legend.position = "left",
+        legend.key.size = unit(0.4, "cm")) + 
+  geom_vline(xintercept = 1.5, lty = 2, color = "red") +
   scale_fill_brewer(palette = "BuPu") +
   geom_histogram(position = "stack", alpha = 0.7, bins = 40, color = "black") +
-  facet_wrap(Experiment ~ .) +
-  labs(y = "Number of proteins in bin", x = "Protein LiP-Score", fill = "in Crapome")
+  facet_wrap(Experiment ~ ., scales = "free_y") +
+  labs(y = "# Proteins per bin", x = "Protein LiP-Score", fill = "In PFL", title = " ")+
+  theme(legend.position="left")
 
 histogram_plot
 
 
 ggsave("./LiP_Quant/Plots/Histogram_plot.png",
        histogram_plot,
-       width = 6,
-       height = 4)
+       width = 10,
+       height = 3)
 ```
 
 

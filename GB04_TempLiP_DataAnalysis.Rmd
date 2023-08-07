@@ -46,13 +46,20 @@ pep_metadata = fread("./Temporal_LiP/GB04_Preprocessed_data/230627_1830_GB_TempL
 
 prot_raw = fread("./Temporal_LiP/GB04_Preprocessed_data/230627_1830_GB_TempLiP_Trp_Summarized_Proteins.csv")
 
+lip_pep = fread("./Temporal_LiP/GB04_Preprocessed_data/230627_1830_GB_TempLiP_LiP_Summarized_Peptides.csv") %>%
+  left_join(pep_metadata)
+
+Sohyon_raw = fread("./Temporal_LiP/PublicationData/PROT_ttest_results_summary.txt") 
+
 uniprot = fread("Uniprot_human_230420.tsv")
 ```
 
+Protein level (show that treatment failed -\> revival of the cells)
 
-
-PROTEIN LEVEL SHIZZLE 
 ```{r}
+# calculate protein differential abundances 
+
+
 prot_diff_abundance = prot_raw %>%
   calculate_diff_abundance(
     sample = sample,
@@ -67,12 +74,6 @@ prot_diff_abundance = prot_raw %>%
   separate(comparison, into = c("time","trash"), sep = "_") %>%
   mutate(time = paste0(time,"_min"))
   
-  
-
-prot_diff_abundance %>%
-  dplyr::filter(adj_pval <= 0.05 & abs(diff) >= 0.5)
-
-
 
 prot_time = rbind(
   prot_diff_abundance %>%
@@ -108,65 +109,152 @@ prot_time = rbind(
   mutate(n_tot = n()) %>%
   mutate(rel_sig_per_prot = n_sig_per_prot/n_tot) %>%
   ungroup()
+
+
+# Data Sohyon
+
+Sohyon = rbind(
+  Sohyon_raw %>%
+    dplyr::select(Gene = Protein_name_simplified, diff = Timepoint_3_vs_0_log2FC, adj_pval = Timepoint_3_vs_0_pval_neglog10) %>%
+    mutate(time = "360_min", time_num = 180, adj_pval = 10^-adj_pval, Exp = "Sohon 3h"),
+  Sohyon_raw %>%
+    dplyr::select(Gene = Protein_name_simplified, diff = Timepoint_9_vs_0_log2FC, adj_pval = Timepoint_9_vs_0_pval_neglog10) %>%
+    mutate(time = "360_min", time_num = 360, adj_pval = 10^-adj_pval, Exp = "Sohon 9h"))
+
+Sohyon_time = prot_time %>%
+  dplyr::filter(adj_pval > 1) %>%
+  full_join(Sohyon)
 ```
 
-Show that something is off batch wise
 ```{r}
-prot_raw %>%
-  separate(comparison, into = c("time","trash"), sep = "_") %>%
-  mutate(time = paste0(time,"_min")) %>%
-  mutate(time_num = as.numeric(gsub("_min","",time))) %>%
-  ggplot(aes(x = as.factor(time_num), y = pg_log2_intensity)) +
-  geom_boxplot()
+relevant_proteins_publication = c("JUN","JUNB","JUND","MAFF","EGR1","EGR2","HSPB1")
 
+t = rbind(
+  prot_time %>%
+    mutate(Exp = "sadf"),
+  Sohyon_time) %>%
+  mutate(title = "Protein quantities ") %>%
+  dplyr::filter(Gene %in% relevant_proteins_publication)
 
-prot_diff_abundance %>%
-  mutate(time_num = as.numeric(gsub("_min","",time))) %>%
-  ggplot(aes(x = as.factor(time_num), y = pval)) +
-  geom_boxplot()
-
-prot_diff_abundance %>%
-  mutate(time_num = as.numeric(gsub("_min","",time))) %>%
-  ggplot(aes(x = as.factor(time_num), y = std_error)) +
-  geom_boxplot() +
-  scale_y_log10()
-
-prot_diff_abundance %>%
-  mutate(time_num = as.numeric(gsub("_min","",time))) %>%
-  ggplot(aes(x = as.factor(time_num), y = diff)) +
-  geom_boxplot()
-
-
-
-test = "HSPB"
-
-prot_time %>%
-  dplyr::filter(grepl(test,Gene) == T) %>%
-  dplyr::select(Gene) %>%
-  unique()
-
-prot_time %>%
-  dplyr::filter(grepl(test, Gene) == T) %>%
-  ggplot(aes(x = time_num, y = diff, group = pg_protein_accessions, color = Gene))+
+t  %>%
+  ggplot(aes(x = time_num, y = diff, color = Exp))+
+  theme_bw() +
+  theme(strip.background = element_blank()) +  
+  geom_ribbon(aes(ymin = diff - std_error, ymax = diff + std_error), alpha = 0.3, color = "grey", fill = "grey") +
   geom_line() +
-  geom_ribbon(aes(ymin = diff - std_error, ymax = diff + std_error, alpha = 0.3, fill = "red")) 
+  geom_point(size = 2) +
+  geom_hline(yintercept = 0) +
+  labs(y = "Protein log2FC", x = "time") +
+  facet_wrap(. ~ Gene)
+
+# 
+# 
+# plot
+# 
+# ggsave("./Temporal_LiP/GB04_AnalysisOutput/GB04_plots/Protein_Traces.png",
+#        plot,
+#        height = 5,
+#        width = 5
+#        )
 
 
-prot_diff_abundance %>%
-  group_by(time) %>%
-  arrange(pval) %>%
-  mutate(rank = row_number()) %>%
-  dplyr::filter(grepl("JUN",Gene) == T)
 ```
+time series clustering of PG
+```{r}
+
+prot_time = rbind(
+  prot_diff_abundance %>%
+    dplyr::select(Gene, 
+                  pg_protein_accessions,
+                  time,
+                  diff,
+                  adj_pval),
+  prot_diff_abundance %>%
+    dplyr::select(Gene, 
+                  pg_protein_accessions,
+                  time,
+                  diff,
+                  adj_pval) %>%
+    mutate(time = "0_min",
+           diff = 0,
+           adj_pval = 1) %>%
+    unique()
+  ) %>% 
+  group_by(pg_protein_accessions) %>%
+  mutate(n = n()) %>%
+  dplyr::filter(n == 12) %>%
+  mutate(time_num = as.numeric(gsub("_min","",time))) %>%
+  group_by(pg_protein_accessions) %>%
+  mutate(n_sig = sum(adj_pval <= 0.05 & abs(diff) >= 1))
+  
+
+prot_time_wide = prot_time %>%
+  dplyr::filter(n_sig >= 1) %>%
+  pivot_wider(id_cols = c("Gene","pg_protein_accessions"), names_from = "time", values_from = "diff")
+
+
+cluster_data_trp = prot_time_wide[4:ncol(prot_time_wide)]
+
+# calculate distance matrix and clusters
+
+dist = dist(cluster_data_trp) 
+
+hc_trp = hclust(dist, method = "average")
+
+cluster_trp = cutree(hc_trp, h = 1.5)
+
+plot(hc_trp, main = "Hierarchical clustering of Trp data:",xlab = "", ylab = "", pch = cluster_trp, labels = F)
+rect.hclust(hc_lip, k = length(unique(cluster_trp)), cluster = cluster_trp)
+
+# comb with orignial 
+
+trp_clustered = cbind(prot_time_wide, cluster_trp) %>%
+  as.data.frame() %>%
+  dplyr::select(pg_protein_accessions, cluster = ...15) %>%
+  left_join(prot_time) %>%
+  group_by(cluster, time) %>%
+  mutate(obs_per_cluster = n()) %>%
+  mutate(est_centroid = mean(diff))
+
+
+#plot traces:
+
+
+trp_clustered %>%
+  group_by(cluster) %>%
+  mutate(n = n()/12) %>%
+  dplyr::filter(n >= 20) %>%
+  dplyr::select(time_num, pg_protein_accessions, cluster, FC = diff, Centroid = est_centroid) %>%
+  mutate(Norm = "Log2-FC") %>%
+  mutate(clusters = paste0("Cluster ", cluster)) %>%
+  ggplot(aes(x = time_num, y = FC, group = pg_protein_accessions)) +
+  geom_line(alpha = 0.2)+
+  geom_line(aes(x = time_num, y = Centroid, color = "red")) +
+  geom_point(aes(x = time_num, y = Centroid, color = "red")) +
+  theme_bw()+
+  theme(strip.background = element_blank()) +
+  theme(axis.text.x = element_text(hjust = 1, angle = 45)) +
+  facet_grid(Norm ~ clusters,  scales = "free_y")+
+  labs(title = " ", x = "", y = "")+
+  guides(color="none")
+
+
+
+```
+
+
+
 
 
 
 Data wrangling and make time series data frame
-
 ```{r}
 gls_adj = gls_adj_raw %>%
-  left_join(pep_metadata) %>%
-  mutate(time = gsub("-0_min","",contrast)) 
+  mutate(time = gsub("-0_min","",contrast)) %>%
+  left_join(pep_metadata %>%
+              dplyr::select(Gene, pg_protein_accessions, eg_modified_sequence) %>%
+              unique(),
+            by = "eg_modified_sequence")
 
 
 gls_time = rbind(
@@ -212,73 +300,118 @@ gls_time = rbind(
   ungroup()
 
 
-# # z-score
-# 
-# gls_time_wide = gls_time %>%
-#   pivot_wider(id_cols = c("Gene","pg_protein_accessions", "eg_modified_sequence","adjecent_sig"), values_from = c("zscore"), names_from = "time") %>%
-#   dplyr::filter(adjecent_sig >= 2)
 
-# max min normalization
+# make wider data frame and filter for significance and >= 2 peptides/protein
 
 gls_time_wide = gls_time %>%
-  dplyr::filter(adjecent_sig >= 2) %>%
-  dplyr::filter(n_tot > 1)%>%
-  pivot_wider(id_cols = c("Gene","pg_protein_accessions", "eg_modified_sequence","adjecent_sig"), values_from = c("max_min_score"), names_from = "time")
-
-
-gls_time %>%
-  mutate(time = as.numeric(gsub("_min","",time))) %>%
-  filter(grepl("JUN", Gene) == T) %>%
-  ggplot(aes(x=time, y= estimate, group = eg_modified_sequence, color = Gene))+
-  geom_smooth(method = "gam")
+  dplyr::filter(n_tot > 1) %>%
+  dplyr::filter(n_sig > 1) %>%
+  pivot_wider(id_cols = c("Gene","pg_protein_accessions", "eg_modified_sequence","adjecent_sig"), values_from = c("max_min_score"), names_from = "time") 
 
 ```
 
-Comparison with SW correction
-
+Data wrangling and make time series data frame
 ```{r}
-gls_adj %>%
-  group_by(time, eg_modified_sequence)  %>%
-  mutate(sig = (abs(estimate) >= 1)) %>%
+gls_adj = gls_adj_raw %>%
+  mutate(time = gsub("-0_min","",contrast)) %>%
+  left_join(pep_metadata %>%
+              dplyr::select(Gene, pg_protein_accessions, eg_modified_sequence) %>%
+              unique(),
+            by = "eg_modified_sequence")
+
+
+gls_time = rbind(
+  gls_adj %>%
+    dplyr::select(Gene,
+                  pg_protein_accessions,
+                  eg_modified_sequence,
+                  time,
+                  estimate,
+                  adj_pval),
+  gls_adj %>%
+    dplyr::select(Gene,
+                  pg_protein_accessions,
+                  eg_modified_sequence,
+                  time,
+                  estimate,
+                  adj_pval) %>%
+    mutate(time = "0_min",
+           estimate = 0,
+           adj_pval = 1) %>%
+    unique()) %>%
+  group_by(eg_modified_sequence) %>%
+  mutate(mean_est = mean(estimate)) %>%
+  mutate(estimate = case_when(
+    mean_est < 0 ~ - estimate,
+    mean_est >= 0 ~ estimate
+  )) %>%
+  dplyr::select(-mean_est) %>%  
+  mutate(time_num = as.numeric(gsub("_min","",time))) %>%
+  mutate(max_est = max(abs(estimate))) %>%
+  mutate(min_adj_pval = min(adj_pval)) %>%
+  mutate(sig = adj_pval <= 0.05 & abs(estimate) >= 1) %>%
+  mutate(n_sig = sum(sig)) %>%
+  mutate(zscore = scale(estimate, center = TRUE, scale = TRUE)) %>%
+  mutate(max_min_score = (estimate - min(estimate))/(max(estimate)-min(estimate))) %>%
+  arrange(eg_modified_sequence, time_num) %>%
+  mutate(adjecent_sig = max(sig) * (max(cumsum(sig * lag(sig, default = 0))) +1)) %>%
   ungroup() %>%
-  dplyr::select(pg_protein_accessions, time,sig) %>%
+  group_by(pg_protein_accessions, time) %>%
+  mutate(n_sig_per_prot = sum(sig)) %>%
+  mutate(n_tot = n()) %>%
+  mutate(rel_sig_per_prot = n_sig_per_prot/n_tot) %>%
+  ungroup()
+
+
+
+# make wider data frame and filter for significance and >= 2 peptides/protein
+
+gls_time_wide = gls_time %>%
+  dplyr::filter(n_tot > 1) %>%
+  dplyr::filter(n_sig > 1) %>%
+  pivot_wider(id_cols = c("Gene","pg_protein_accessions", "eg_modified_sequence","adjecent_sig"), values_from = c("max_min_score"), names_from = "time") 
+
+```
+
+Plot of number of changes
+```{r}
+# Changes per time point and protein 
+
+relative_changes_plot = gls_time %>%
+  dplyr::filter(time_num != 0) %>%
+  dplyr::filter(n_sig_per_prot > 0) %>%
+  dplyr::select(time_num, rel_sig_per_prot) %>%
   unique() %>%
-  mutate(time = as.factor(gsub("_min","",time))) %>%
-  ggplot(aes(x = time, fill = sig))+
-  geom_bar(position = "identity")
+  ggplot(aes(rel_sig_per_prot)) +
+  theme_classic() +
+  scale_fill_brewer(palette = "BuPu") +
+  geom_histogram(color = "black", bins = 25, fill = "lightgrey") +
+  labs(title = " ", x = "Relative LiP changes per protein", y = "Number of peptides per bin") +
+  facet_wrap(. ~ as.factor(time_num))
+
+
+relative_changes_plot
 
 
 
-test = gls_adj %>%
-  mutate(time = as.numeric(gsub("_min-0_min","",contrast))) %>%
-  inner_join(sw_adj, by = c("eg_modified_sequence","time"))
+ggsave("./Temporal_LiP/GB04_AnalysisOutput/GB04_plots/Relative_Changes.png",
+       relative_changes_plot,
+       height = 4,
+       width = 7)
 
 
-test %>%
-  ggplot(aes(estimate, adj_diff)) +
-  geom_point()
-
-test %>%
-  ggplot(aes(p.value, pval)) +
-  geom_point()+
-  geom_density2d(color = "orange")
-
-cor(test$estimate, test$adj_diff)
 ```
 
 Hierarchical Clustering
 
 ```{r}
+set.seed(1234)
 # Parameters to test:
 
-k_clusters = 18
+k_clusters = 30
 
 # Make cluster data
 cluster_data_lip = gls_time_wide[5:ncol(gls_time_wide)]
-
-
-############CHANGEEEESSS 
-# cluster_data_lip = gls_time_wide[c("0_min","30_min","60_min","180_min","360_min")]
 
 # calculate distance matrix and clusters
 
@@ -286,13 +419,14 @@ dist = dist(cluster_data_lip)
 
 hc_lip = hclust(dist, method = "average")
 
-clusters = cutree(hc_lip, k = k_clusters)
+clusters = cutree(hc_lip, h = 0.6)
+
+# Combine with original data
 
 lip_hc_clustered = cbind(gls_time_wide, clusters) %>%
   as.data.frame() %>%
   dplyr::select(eg_modified_sequence, clusters) %>%
   left_join(gls_time) %>%
-  # dplyr::filter(time %in% c("0_min","30_min","60_min","180_min","360_min")) %>%
   group_by(clusters, time) %>%
   mutate(obs_per_cluster = n()) %>%
   mutate(est_centroid = mean(estimate)) %>%
@@ -300,96 +434,113 @@ lip_hc_clustered = cbind(gls_time_wide, clusters) %>%
   mutate(maxmin_centroid = mean(max_min_score)) %>%
   ungroup()
 
-lip_hc_clustered %>%
-  dplyr::select(obs_per_cluster, clusters) %>%
-  unique() %>%
-  ggplot(aes(obs_per_cluster)) +
-  geom_histogram(bins = 300) +
-  geom_vline(xintercept = 2)
+
+# Plotting of Dendrogram
+
+plot(hc_lip, main = "Hierarchical clustering of LiP data:",xlab = "", ylab = "", pch = clusters, labels = F)
+rect.hclust(hc_lip, k = length(unique(clusters)), cluster = clusters)
 
 
+svg("./Temporal_LiP/GB04_AnalysisOutput/GB04_plots/Dendrogram.svg")
 
-#######PLOTTING ####### 
+# Code of the plot
+plot(hc_lip, main = "Hierarchical clustering of LiP data:",xlab = "", ylab = "", pch = clusters, labels = F)
+rect.hclust(hc_lip, k = length(unique(clusters)), cluster = clusters)
 
-# Dendrogram
-plot(hc_lip, main = "Hierarchical clustering of LiP data:")
-rect.hclust(hc_lip, k = k_clusters, border = 2:5)
+dev.off() 
+
+
 # PCA + Clusters
+
 
 fviz_cluster(list(data = cluster_data_lip, cluster = clusters))
 
 
-# time series data
 
 
 
-lip_hc_clustered %>%
-  dplyr::filter(obs_per_cluster >= 40) %>%
-  ggplot(aes(x = time_num, y = estimate, group = eg_modified_sequence)) +
+
+```
+```{r}
+x = gls_time_wide %>%
+  dplyr::filter(`5_min` == 1 |
+                `15_min` == 1 )
+```
+
+
+
+
+Peptide trace plots: 
+```{r}
+# All time series:
+
+plot = rbind(lip_hc_clustered %>%
+  dplyr::select(time_num, eg_modified_sequence, clusters, FC = max_min_score, Centroid = maxmin_centroid) %>%
+  mutate(Norm = "Max-Min-FC"),
+  lip_hc_clustered %>%
+  dplyr::select(time_num, eg_modified_sequence, clusters, FC = estimate, Centroid = est_centroid) %>%
+  mutate(Norm = "Log2-FC")) %>%
+  mutate(clusters = paste0("Cluster ",clusters)) %>%
+  ggplot(aes(x = time_num, y = FC, group = eg_modified_sequence)) +
+  geom_line(alpha = 0.2)+
+  geom_line(aes(x = time_num, y = Centroid, color = "red")) +
+  geom_point(aes(x = time_num, y = Centroid, color = "red")) +
   theme_bw()+
-  geom_line()+
-  geom_line(aes(x = time_num, y = est_centroid, color = "red")) +
-  geom_point(aes(x = time_num, y = est_centroid, color = "red")) +
-  facet_grid(. ~ clusters)+
-  labs(title = "Time scale clusters, log2FC")
+  theme(strip.background = element_blank()) +
+  theme(axis.text.x = element_text(hjust = 1, angle = 45)) +
+  facet_grid(Norm ~ clusters,  scales = "free_y")+
+  labs(title = " ", x = "", y = "")+
+  guides(color="none")
+
+plot
 
 
-# 
-# lip_hc_clustered %>%
-#   dplyr::filter(obs_per_cluster >= 40) %>%
-#   ggplot(aes(x = time_num, y = zscore, group = eg_modified_sequence)) +
-#   theme_bw()+
-#   geom_line()+
-#   geom_line(aes(x = time_num, y = zscore_centroid, color = "red")) +
-#   geom_point(aes(x = time_num, y = zscore_centroid, color = "red")) +
-#   facet_grid(. ~ clusters)+
-#   labs(title = "Time scale clusters, z score")
+ggsave("./Temporal_LiP/GB04_AnalysisOutput/GB04_plots/All_ts_cluster_plot.png",
+       plot,
+       height = 3,
+       width = 10)
 
-lip_hc_clustered %>%
+# Selected clusters (over 10 peptides)
+
+
+plot = rbind(lip_hc_clustered %>%
   dplyr::filter(obs_per_cluster >= 40) %>%
-  ggplot(aes(x = time_num, y = max_min_score, group = eg_modified_sequence)) +
+  dplyr::select(time_num, eg_modified_sequence, clusters, FC = max_min_score, Centroid = maxmin_centroid) %>%
+  mutate(Norm = "Max-Min-FC"),
+  lip_hc_clustered %>%
+  dplyr::filter(obs_per_cluster >= 40) %>%
+  dplyr::select(time_num, eg_modified_sequence, clusters, FC = estimate, Centroid = est_centroid) %>%
+  mutate(Norm = "Log2-FC")) %>%
+  mutate(clusters = paste0("Cluster ",clusters)) %>%
+  ggplot(aes(x = time_num, y = FC, group = eg_modified_sequence)) +
+  geom_line(alpha = 0.2)+
+  geom_line(aes(x = time_num, y = Centroid, color = "red")) +
+  geom_point(aes(x = time_num, y = Centroid, color = "red")) +
   theme_bw()+
-  geom_line()+
-  geom_line(aes(x = time_num, y = maxmin_centroid, color = "red")) +
-  geom_point(aes(x = time_num, y = maxmin_centroid, color = "red")) +
-  facet_grid(. ~ clusters)+
-  labs(title = "Time scale clusters, z score")
-
+  theme(strip.background = element_blank()) +
+  facet_grid(Norm ~ clusters,  scales = "free_y")+
+  labs(title = " ", x = "", y = "")+
+  guides(color="none")
   
-  
-lip_hc_clustered %>%
-  dplyr::filter(obs_per_cluster >= 40) %>%
-  dplyr::select(time_num, clusters, obs_per_cluster, zscore_centroid, est_centroid) %>%
-  unique() %>%
-  pivot_longer(cols = c("zscore_centroid","est_centroid")) %>%
-  mutate(clusters = as.factor(clusters)) %>%
-  ggplot(aes(x = time_num, y = value, group = clusters, color = clusters)) +
-  theme_bw()+
-  geom_line()+
-  facet_grid(name ~ .)+
-  labs(title = "Cluster centroids")
+plot
+
+
+ggsave("./Temporal_LiP/GB04_AnalysisOutput/GB04_plots/Selected_ts_cluster_plot.png",
+       plot,
+       height = 3,
+       width = 10)
 
 
 
+```
 
 
 
+Call proteins based on cluster abundance
 
-x = lip_hc_clustered %>%
-  group_by(clusters, time) %>%
-  mutate(obs_per_cluster = n()) %>%
-  unique() %>%
-  ungroup() %>%
-  dplyr::filter(obs_per_cluster >= 40) %>%
-  left_join(pep_metadata) %>%
-  mutate(tryptic = (aa_before %in% c("R","K","")) & (last_aa %in% c("R","K",""))) %>%
-  group_by(clusters, tryptic) %>%
-  mutate(count = n()) %>%
-  dplyr::select(count) %>%
-  unique() %>%
-  group_by(clusters) %>%
-  mutate(rel = count/sum(count))
-
+```{r}
+# Call proteins based on cluster annotation -> majority vote
+# If same number of peptides from multiple clusters -> in multiple clusters
 
 hc_call = lip_hc_clustered  %>%
   group_by(clusters, time) %>%
@@ -397,381 +548,324 @@ hc_call = lip_hc_clustered  %>%
   dplyr::select(Gene, eg_modified_sequence, pg_protein_accessions, clusters) %>%
   unique() %>%
   group_by(pg_protein_accessions) %>%
-  mutate(n_pep = n()) %>%
+  mutate(n_pep = n()/5) %>%
   group_by(pg_protein_accessions, clusters) %>%
-  mutate(n_per_cluster = n()) %>%
+  mutate(n_per_cluster = n()/5) %>%
   group_by(pg_protein_accessions) %>%
   mutate(rel = n_per_cluster/n_pep) %>%
   mutate(max_rel = max(rel)) %>%
   ungroup() %>%
   dplyr::filter(rel == max_rel) %>% 
-  dplyr::select(Gene, pg_protein_accessions, clusters) %>%
+  dplyr::select(Gene, pg_protein_accessions, clusters, max_rel, n_pep) %>%
   unique() %>%
   group_by(clusters) %>%
   mutate(prot_per_cluster = n()) %>%
   ungroup()
 
-
-helper = lip_hc_clustered %>%
-  dplyr::select(clusters, eg_modified_sequence) %>%
-  unique() %>%
-  group_by(clusters) %>%
-  mutate(pep_per_cluster = n()) %>%
-  dplyr::select(clusters, pep_per_cluster) %>%
+hc_call %>%
+  group_by(Gene) %>%
+  mutate(N = n()) %>%
+  ungroup() %>%
+  dplyr::select(N) %>%
+  group_by(N) %>%
+  mutate(Number_n = n()) %>%
   unique()
 
-
-hc_call %>%
-  dplyr::select(clusters, prot_per_cluster) %>%
-  left_join(helper) %>%
-  unique() %>%
-  arrange(prot_per_cluster)
-
-
-
-ts_cluster_mm_plot = lip_hc_clustered %>%
-  dplyr::filter(obs_per_cluster >= 50) %>%
-  ggplot(aes(x = time_num, y = max_min_score, group = eg_modified_sequence)) +
-  theme_bw()+
-  geom_line(alpha = 0.2)+
-  geom_line(aes(x = time_num, y = maxmin_centroid, color = "red")) +
-  geom_point(aes(x = time_num, y = maxmin_centroid, color = "red")) +
-  theme(axis.text.x = element_text(hjust = 1, angle = 45)) +
-  facet_grid(. ~ clusters)+
-  labs(title = "", x = "", y = "Max-Min normalised fold-changes")+
-  guides(color="none")
-
-ts_cluster_mm_plot
-
-
-
-ggsave("./Temporal_LiP/GB04_AnalysisOutput/GB04_plots/ts_cluster_mm_plot.png",
-       ts_cluster_mm_plot,
-       height = 4,
-       width = 8)
-
-```
-
-DTW clustering:
-
-```{r}
-dtw_cluster = tsclust(cluster_data_lip, k = 10)
-
-ts_clusters = attr(dtw_cluster, "cluster")
-
-
-
-
-
-
-
-##
-ts_clustered = cbind(gls_time_wide, ts_clusters) %>%
-  as.data.frame() %>%
-  dplyr::select(eg_modified_sequence, ts_clusters) %>%
-  left_join(gls_time) %>%
-  group_by(ts_clusters, time) %>%
-  mutate(obs_per_cluster = n()) %>%
-  mutate(est_centroid = mean(estimate)) %>%
-  mutate(zscore_centroid = mean(zscore)) %>%
-  mutate(maxmin_centroid = mean(max_min_score)) %>%
-  ungroup()
-
-ts_clustered %>%
-  dplyr::select(obs_per_cluster, ts_clusters) %>%
-  unique() %>%
-  ggplot(aes(obs_per_cluster)) +
-  geom_histogram(bins = 300) +
-  geom_vline(xintercept = 2)
-
-
-
-# time series dat
-
-ts_clustered %>%
-  dplyr::filter(obs_per_cluster >= 40) %>%
-  ggplot(aes(x = time_num, y = max_min_score, group = eg_modified_sequence)) +
-  theme_bw()+
-  geom_line()+
-  geom_line(aes(x = time_num, y = maxmin_centroid, color = "red")) +
-  geom_point(aes(x = time_num, y = maxmin_centroid, color = "red")) +
-  facet_grid(. ~ ts_clusters)+
-  labs(title = "Time scale clusters, z score")
-```
-
-Fuzzy c-means clustering:
-
-```{r}
-set.seed(1432)
-# fuzzy c-means clustering
-
-k = 100
-
-fcm_result <- cmeans(cluster_data_lip, dist = "manhattan", centers = k)
-
-fcm_clusters = fcm_result$cluster
-
-lip_fc_clustered = cbind(gls_time_wide, fcm_clusters) %>%
-  as.data.frame() %>%
-  dplyr::select(eg_modified_sequence, fcm_clusters) %>%
-  left_join(gls_time) %>%
-  group_by(fcm_clusters, time) %>%
-  mutate(obs_per_cluster = n()) %>%
-  mutate(est_centroid = mean(estimate)) %>%
-  mutate(zscore_centroid = mean(zscore)) %>%
-  ungroup()
-
-
-
-fcm_result$size
-
-membership = fcm_result$membership
-
-fuzzyclusters = cbind(gls_time_wide, membership) %>%
-  as.data.frame() %>%
-  dplyr::select(eg_modified_sequence, colnames(membership)) %>%
-  left_join(gls_time)
-
-
-fviz_cluster(list(data = cluster_data_lip, cluster = fcm_clusters))
-
-
-# time series data
-
-
-
-lip_fc_clustered %>%
-  ggplot(aes(x = time_num, y = estimate, group = eg_modified_sequence)) +
-  theme_bw()+
-  geom_line()+
-  geom_line(aes(x = time_num, y = est_centroid, color = "red")) +
-  geom_point(aes(x = time_num, y = est_centroid, color = "red")) +
-  facet_grid(. ~ fcm_clusters)+
-  labs(title = "Time scale clusters, log2FC")
-
-
-
-lip_fc_clustered %>%
-  ggplot(aes(x = time_num, y = zscore, group = eg_modified_sequence)) +
-  theme_bw()+
-  geom_line()+
-  geom_line(aes(x = time_num, y = zscore_centroid, color = "red")) +
-  geom_point(aes(x = time_num, y = zscore_centroid, color = "red")) +
-  facet_grid(. ~ fcm_clusters)+
-  labs(title = "Time scale clusters, z score")
-
-
-  
-# fc_call = fuzzyclusters %>%
-#   dplyr::filter(mean_Prob == max_Prob) %>%
-#   dplyr::select(Gene, 
-#                 pg_protein_accessions,
-#                 cluster = variable,
-#                 max_Prob) %>%
-#   unique()
-
-fviz_cluster(list(data = cluster_data_lip, axes = c(1,2),geom = c("point"), cluster = fcm_clusters))
-
-```
-
-Correlation based clustering
-
-```{r}
-# Pairwise correlation between samples (columns)
-cols.cor <- cor(cluster_data_lip, use = "pairwise.complete.obs", method = "pearson")
-# Pairwise correlation between rows (genes)
-rows.cor <- cor(t(cluster_data_lip), use = "pairwise.complete.obs", method = "pearson")
-
-# Plot the heatmap
-library("pheatmap")
-pheatmap(
-  cluster_data_lip, scale = "row", 
-  clustering_distance_cols = as.dist(1 - cols.cor),
-  clustering_distance_rows = as.dist(1 - rows.cor)
-  )
-
-pheatmap(
-  cluster_data_lip, scale = "row",
-  clustering_distance_rows = as.dist(1 - rows.cor)
-)
-```
-
-CURE clustering
-
-```{python}
-from pyclustering.cluster.cure import cure
-
-
-cure_instance = cure(cluster_data_lip, 3);
-
-```
-
-DBSCAN -\> didnt work well
-
-```{r}
-library(fpc)
-set.seed(123)
-
-
-dbscan_lip <- dbscan(cluster_data_lip, eps = 0.2, MinPts = 50)
-
-
-clusters = dbscan_lip$cluster
-
-unique(clusters)
-
-lip_dbscan_clustered = cbind(gls_time_wide, clusters) %>%
-  as.data.frame() %>%
-  dplyr::select(eg_modified_sequence, clusters) %>%
-  left_join(gls_time) %>%
-  group_by(clusters, time) %>%
-  mutate(obs_per_cluster = n()) %>%
-  mutate(est_centroid = mean(estimate)) %>%
-  mutate(zscore_centroid = mean(zscore)) %>%
-  mutate(maxmin_centroid = mean(max_min_score)) %>%
-  ungroup()
-
 lip_hc_clustered %>%
-  dplyr::select(obs_per_cluster, clusters) %>%
+  dplyr::select(clusters, Gene) %>%
   unique() %>%
-  ggplot(aes(obs_per_cluster)) +
-  geom_histogram(bins = 300) +
-  geom_vline(xintercept = 2)
-
-
-plot(lip_dbscan_clustered, cluster_data_lip, main = "DBScan")
+  group_by(Gene) %>%
+  mutate(N = n()) %>%
+  ungroup() %>%
+  dplyr::select(N) %>%
+  group_by(N) %>%
+  mutate(Number_n = n()) %>%
+  unique()
 
 ```
 
-GO-Enrichment of clusters
+
+Plot with significant pep/prot per time point and features per cluster
+```{r}
+# Significant changes per time point:
+
+sig_per_time = rbind(
+  gls_time %>%
+    dplyr::select(pg_protein_accessions, x_value = time_num, sig) %>%
+    group_by(x_value, pg_protein_accessions) %>%
+    mutate(sig_prot = sum(sig) > 0) %>%
+    dplyr::select(sig_prot) %>%
+    unique()  %>%
+    group_by(x_value) %>%
+    mutate(value = sum(sig_prot)/n()*100) %>%
+    dplyr::select(value) %>%
+    mutate(entity = "Protein") %>%
+    unique(),
+  gls_time %>%
+    dplyr::select(eg_modified_sequence, x_value = time_num, sig) %>%
+    group_by(x_value) %>%
+    mutate(value = sum(sig)/n()*100) %>%
+    dplyr::select(value) %>%
+    unique()  %>%
+    mutate(entity = "Peptide")) %>%
+  dplyr::filter(x_value != 0) %>%
+  arrange(x_value) %>%
+  ungroup() %>%
+  mutate(order = row_number()) %>%
+  mutate(x_value = as.character(x_value)) %>%
+  mutate(facet = "% Significant/time point")
+
+
+plot = sig_per_time %>%
+  mutate(x_value = fct_reorder(x_value, order)) %>%
+  ggplot(aes(x = x_value, y = value, fill = entity)) +
+  geom_col(position = position_dodge(), color = "black")+
+  theme_bw()+ 
+  theme(legend.position = "left",
+        legend.key.size = unit(0.4, "cm"),
+        legend.margin = margin(r=- 0.6, unit = "cm")) + 
+  theme(panel.grid = element_blank()) +
+  theme(strip.background = element_blank()) +
+  scale_fill_brewer(palette = "BuPu") +
+  labs(title = " ",x = "", y = "", fill = "")+
+  facet_wrap(. ~ facet, scales = "free")
+  
+plot
+
+ggsave(paste0("./Temporal_LiP/GB04_AnalysisOutput/GB04_plots/Relative_Sig_per_timepoint.png"),
+      plot,
+      height = 3,
+      width = 5)
+
+
+#Plot Features per cluster
+
+n_per_cluster = rbind(
+  lip_hc_clustered %>%
+    dplyr::select(eg_modified_sequence, x_value = clusters) %>%
+    unique() %>%
+    group_by(x_value) %>%
+    mutate(value = n()) %>%
+    dplyr::select(value) %>%
+    unique() %>%
+    mutate(entity = "Peptide") %>%
+    mutate(x_value = case_when(
+       value < 40 ~ "other",
+       TRUE ~ as.factor(x_value)
+    )) %>%
+    mutate(value = sum(value)) %>%
+    unique(),  
+  lip_hc_clustered %>%
+    dplyr::select(pg_protein_accessions, x_value = clusters) %>%
+    unique() %>%
+    group_by(x_value) %>%
+    mutate(value = n()) %>%
+    dplyr::select(value) %>%
+    unique() %>%
+    mutate(x_value = case_when(
+       value < 30 ~ "other",
+       TRUE ~ as.factor(x_value))
+       ) %>%
+    mutate(value = sum(value)) %>%
+    unique() %>%
+    mutate(entity = "Protein")) %>%
+  ungroup() %>%
+  arrange(as.numeric(x_value)) %>%
+  mutate(order = row_number()) %>%
+  mutate(facet = "Features per cluster")
+
+
+
+plot = n_per_cluster %>%
+  mutate(x_value = fct_reorder(as.factor(x_value), order)) %>%
+  ggplot(aes(x = x_value, y = value, fill = entity)) +
+  geom_col(position = position_dodge(), color = "black")+
+  theme_bw()+ 
+  theme(legend.position = "left",
+        legend.key.size = unit(0.4, "cm"),
+        legend.margin = margin(r=- 0.6, unit = "cm")) + 
+  theme(panel.grid = element_blank()) +
+  theme(strip.background = element_blank()) +
+  scale_fill_brewer(palette = "BuPu") +
+  labs(title = " ",x = "", y = "", fill = "")+
+  facet_wrap(. ~ facet, scales = "free")
+  
+plot
+
+ggsave(paste0("./Temporal_LiP/GB04_AnalysisOutput/GB04_plots/Features_per_cluster.png"),
+      plot,
+      height = 3,
+      width = 4.5)
+
+
+
+# Combined:
+
+
+plot = rbind(sig_per_time, n_per_cluster) %>%
+  mutate(x_value = fct_reorder(x_value, order)) %>%
+  ggplot(aes(x = x_value, y = value, fill = entity)) +
+  geom_col(position = position_dodge(), color = "black")+
+  theme_bw()+ 
+  theme(legend.position = "left",
+        legend.key.size = unit(0.4, "cm"),
+        legend.margin = margin(r=- 0.6, unit = "cm")) + 
+  theme(panel.grid = element_blank()) +
+  theme(strip.background = element_blank()) +
+  scale_fill_brewer(palette = "BuPu") +
+  labs(title = " ",x = "", y = "", fill = "")+
+  facet_wrap(. ~ facet, scales = "free")
+
+plot
+
+ggsave(paste0("./Temporal_LiP/GB04_AnalysisOutput/GB04_plots/Features_per_clusterANDSigPerTP.png"),
+      plot,
+      height = 3,
+      width = 5)
+
+
+#For dendrogram title:
+
+plot = n_per_cluster %>%
+  mutate(facet = "Hierarchical clustering of peptide traces") %>%
+  mutate(x_value = "", value = 0) %>%
+  ggplot(aes(x = x_value, y = value)) +
+  geom_col(position = position_dodge(), color = "black")+
+  theme_bw()+ 
+  theme(axis.ticks.x = element_blank())+
+  scale_y_continuous(limits = c(-0.25,1.5), breaks = c(0, 0.2, 0.4, 0.6, 0.8, 1, 1.2, 1.4)) +
+  theme(legend.position = "left",
+        legend.key.size = unit(0.4, "cm"),
+        legend.margin = margin(r=- 0.6, unit = "cm")) + 
+  theme(panel.grid = element_blank()) +
+  theme(strip.background = element_blank()) +
+  scale_fill_brewer(palette = "BuPu") +
+  labs(title = " ",x = "", y = "", fill = "")+
+  facet_wrap(. ~ facet, scales = "free")
+
+ggsave(paste0("./Temporal_LiP/GB04_AnalysisOutput/GB04_plots/DendroTitle.jpeg"),
+      plot,
+      height = 3,
+      width = 5)
+
+```
+
+
+Nice QC-plot for supplementary:
 
 ```{r}
-
-#GO over representation analysis for clusters:
-
-universe = unique(gls_adj$pg_protein_accessions)
-
-cluster = unique((hc_call %>%
-                   dplyr::filter(prot_per_cluster >= 20))$clusters)
-
-
-GO_overrep_Lip_BP = data.frame()
-
-
-for (i in cluster){
-  
-  genes = (hc_call %>%
-    filter(clusters == i) %>%
-    dplyr::select(pg_protein_accessions) %>%
-    unique())$pg_protein_accessions
-  
-  tryCatch({
-    
-      GO = enrichGO(gene = genes, 
-           ont ="BP",
-           keyType = "UNIPROT",
-           universe = universe,
-           pvalueCutoff = 1, 
-           minGSSize = 10,
-           maxGSSize = 500,
-           OrgDb = organism, 
-           pAdjustMethod = "BH")
-
-  
-      simple_GO = simplify(GO, cutoff = 0.7)
-
-  plot = dotplot(GO, showCategory=20)+
-    labs(title = paste0("GO:Biological Process LiP cluster ", i))
-  
-  plot_simple = dotplot(simple_GO, showCategory=20)+
-    labs(title = paste0("GO:Simplified Biological Process LiP cluster ", i))
-  
-  # ggsave(paste0("./GB04/GB_04_AnalysisOutput/GeneOntologyFuzzy/GO-BP_LiP-Fuzzycluster",i,".png"),
-  #      plot,
-  #      height = 8,
-  #      width = 9) 
-  # 
-  # ggsave(paste0("./GB04/GB_04_AnalysisOutput/GeneOntologyFuzzy/GO-BP_LiP-Fuzzycluster",i,"simplified.png"),
-  #      plot_simple,
-  #      height = 8,
-  #      width = 9) 
-  # 
-  GO_overrep_Lip_BP = rbind(GO_overrep_Lip_BP, as.data.frame(GO@result) %>%
-    mutate(cluster = i))
-  
-  # print(plot)
-  
-  print(plot_simple)
-  
-  print(i)
-  
-  
-  },
- error = function(e)
- print(paste0("No significant enrichment in cluster ",i)) 
- )
-}
+# Coefficients of variation: 
+plot = lip_pep %>%
+  mutate(sample = gsub("min_LiP_","",sample)) %>%
+  mutate(intensity = 2^pep_int) %>%
+  qc_cvs(
+    grouping = eg_modified_sequence,
+    condition = r_condition,
+    intensity = intensity,
+    plot_style = "violin")  +
+  theme(legend.position = "none") +
+  labs(title = "Coefficients of variation of mod. peptides")
 
 
 
+plot 
 
-
-
-GO_overrep_LiP_MF = data.frame()
-
-for (i in cluster){
+ggsave("./Temporal_LiP/GB04_AnalysisOutput/QC_plots/GB04_liP_CVs.png",
+       plot,
+       height = 3.5,
+       width = 10)
+ 
   
-  genes = (hc_call %>%
-    filter(clusters == i) %>%
-    dplyr::select(pg_protein_accessions) %>%
-    unique())$pg_protein_accessions
-  
-  tryCatch({
-  
-  GO = enrichGO(gene = genes, 
-           ont ="MF",
-       keyType = "UNIPROT",
-       universe = universe,
-       pvalueCutoff = 1, 
-       minGSSize = 10,
-       maxGSSize = 500,
-       OrgDb = organism, 
-       pAdjustMethod = "BH")
-
-  simple_GO = simplify(GO, cutoff = 0.7)
-  
-  plot = dotplot(GO, showCategory=20)+
-    labs(title = paste0("GO:Molecular Function LiP cluster ", i))
-  
-  plot_simple = dotplot(simple_GO, showCategory=20)+
-    labs(title = paste0("GO:Simplified Biological Process LiP cluster ", i))
-  
-  # ggsave(paste0("./GB04/GB_04_AnalysisOutput/GeneOntologyFuzzy/GO-MF_LiP-Fuzzycluster",i,".png"),
-  #      plot,
-  #      height = 8,
-  #      width = 9)
-  # 
-  # ggsave(paste0("./GB04/GB_04_AnalysisOutput/GeneOntologyFuzzy/GO-MF_LiP-Fuzzycluster",i,"simplified.png"),
-  #      plot_simple,
-  #      height = 8,
-  #      width = 9)
-
-
-  
-  GO_overrep_LiP_MF = rbind(GO_overrep_LiP_MF, as.data.frame(GO@result) %>%
-    mutate(cluster = i))
-  
-  
-  
-  #print(plot)
-  
-  print(plot_simple)
-  
-    
-  },
- error = function(e)
- print(paste0("No significant enrichment in cluster ",i))
+lip_pep %>%
+  mutate(sample = gsub("min_LiP_","",sample)) %>%
+  mutate(intensity = 2^pep_int) %>%
+  qc_cvs(
+    grouping = eg_modified_sequence,
+    condition = r_condition,
+    intensity = intensity,
+    plot = F
   )
-}
 
+
+# Number of peptide identifications:
+
+plot = lip_pep %>%
+  mutate(sample = gsub("min_LiP_","",sample)) %>%
+  qc_ids(
+       sample = sample,
+       grouping = eg_modified_sequence,
+       intensity = pep_int,
+       condition = r_condition,
+       plot = T) +
+  theme(legend.position = "none") +
+  labs(title = "Mod. peptide identifications")
+
+plot 
+
+ggsave("./Temporal_LiP/GB04_AnalysisOutput/QC_plots/GB04_liP_IDs.png",
+       plot,
+       height = 3.5,
+       width = 10)
+
+# Peptide type:
+
+plot = lip_pep %>%
+  mutate(sample = gsub("min_LiP_","",sample)) %>%
+  assign_peptide_type(aa_before = aa_before,
+               last_aa = last_aa, 
+               aa_after = aa_after) %>%
+  qc_peptide_type(
+    sample = sample,
+    peptide = eg_modified_sequence,
+    pep_type = pep_type,
+    method = "intensity",
+    intensity = pep_int,
+    plot = T
+  ) +
+  labs(title = "Mod. peptide type intensities")
+
+plot 
+
+ggsave("./Temporal_LiP/GB04_AnalysisOutput/QC_plots/GB04_liP_pep_types.png",
+       plot,
+       height = 4.68,
+       width = 20)
+
+# PCA:
+
+plot = lip_pep %>%
+  qc_pca(
+    sample = sample,
+    grouping = eg_modified_sequence,
+    intensity = pep_int,
+    condition = r_condition,
+    components = c("PC1","PC2"),
+    plot_style = "pca"
+  )
+
+plot 
+
+ggsave("./Temporal_LiP/GB04_AnalysisOutput/QC_plots/GB04_liP_pca.png",
+       plot,
+       height = 5,
+       width = 10)
+
+# Hierarchical clustering
+
+plot = lip_pep %>%
+  mutate(sample = gsub("min_LiP_","",sample)) %>%
+  qc_sample_correlation(
+    sample = sample,
+    grouping = eg_modified_sequence,
+    intensity_log2 = pep_int,
+    condition = r_condition
+    )
+
+
+plot 
+
+ggsave("./Temporal_LiP/GB04_AnalysisOutput/QC_plots/GB04_liP_heatmap.png",
+       plot,
+       height = 6,
+       width = 10)
 ```

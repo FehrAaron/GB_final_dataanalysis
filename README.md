@@ -16,4 +16,4 @@ GB04_TempLiP_LinearModel.Rmd: Script to fit genearlised linear model to preproce
 
 GB04_TempLiP_Preprocessing.Rmd: Script for preprocessing (filtering, summarisation to peptide level, QC, ...) for T2
 
-LIP-Scoring GLobal analysis V3.2 MIT Licence modified.r: Script for DRC fitting of LiP-Quant experiments L1,L2 and M1. The script from "https://github.com/RolandBruderer/LiP-Quant" was slightly modified in order to bypass some bugs. Copyright (c) 2020 Roland Bruderer, Biognosys AG, Switzerland
+LIP-Scoring GLobal analysis V3.2 MIT Licence modified.r: Script for DRC fitting of LiP-Quant experiments L1,L2 and M1. The script from "https://github.com/RolandBruderer/LiP-Quant" was slightly modified (reading of PFL file and writing drc plots for peptides with long file names). Changes can be searched with "Aaron". For our analysis, the script was run with the follwing settings: No score weighting: NO, Correlation: Pearson, Intensity transformation: Log, Perform DRC: YES, use PFL NO, Select all conditions between DMSO and doses for analysis.

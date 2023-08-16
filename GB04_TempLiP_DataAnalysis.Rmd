@@ -54,11 +54,9 @@ Sohyon_raw = fread("./Temporal_LiP/PublicationData/PROT_ttest_results_summary.tx
 uniprot = fread("Uniprot_human_230420.tsv")
 ```
 
-Protein level (show that treatment failed -\> revival of the cells)
-
+Protein level analysis (investigate if treatment worked)
 ```{r}
 # calculate protein differential abundances 
-
 
 prot_diff_abundance = prot_raw %>%
   calculate_diff_abundance(
@@ -73,7 +71,8 @@ prot_diff_abundance = prot_raw %>%
   ) %>%
   separate(comparison, into = c("time","trash"), sep = "_") %>%
   mutate(time = paste0(time,"_min"))
-  
+
+#make time data  
 
 prot_time = rbind(
   prot_diff_abundance %>%
@@ -127,6 +126,7 @@ Sohyon_time = prot_time %>%
 ```
 
 ```{r}
+
 relevant_proteins_publication = c("JUN","JUNB","JUND","MAFF","EGR1","EGR2","HSPB1")
 
 t = rbind(
@@ -159,90 +159,6 @@ t  %>%
 
 
 ```
-time series clustering of PG
-```{r}
-
-prot_time = rbind(
-  prot_diff_abundance %>%
-    dplyr::select(Gene, 
-                  pg_protein_accessions,
-                  time,
-                  diff,
-                  adj_pval),
-  prot_diff_abundance %>%
-    dplyr::select(Gene, 
-                  pg_protein_accessions,
-                  time,
-                  diff,
-                  adj_pval) %>%
-    mutate(time = "0_min",
-           diff = 0,
-           adj_pval = 1) %>%
-    unique()
-  ) %>% 
-  group_by(pg_protein_accessions) %>%
-  mutate(n = n()) %>%
-  dplyr::filter(n == 12) %>%
-  mutate(time_num = as.numeric(gsub("_min","",time))) %>%
-  group_by(pg_protein_accessions) %>%
-  mutate(n_sig = sum(adj_pval <= 0.05 & abs(diff) >= 1))
-  
-
-prot_time_wide = prot_time %>%
-  dplyr::filter(n_sig >= 1) %>%
-  pivot_wider(id_cols = c("Gene","pg_protein_accessions"), names_from = "time", values_from = "diff")
-
-
-cluster_data_trp = prot_time_wide[4:ncol(prot_time_wide)]
-
-# calculate distance matrix and clusters
-
-dist = dist(cluster_data_trp) 
-
-hc_trp = hclust(dist, method = "average")
-
-cluster_trp = cutree(hc_trp, h = 1.5)
-
-plot(hc_trp, main = "Hierarchical clustering of Trp data:",xlab = "", ylab = "", pch = cluster_trp, labels = F)
-rect.hclust(hc_lip, k = length(unique(cluster_trp)), cluster = cluster_trp)
-
-# comb with orignial 
-
-trp_clustered = cbind(prot_time_wide, cluster_trp) %>%
-  as.data.frame() %>%
-  dplyr::select(pg_protein_accessions, cluster = ...15) %>%
-  left_join(prot_time) %>%
-  group_by(cluster, time) %>%
-  mutate(obs_per_cluster = n()) %>%
-  mutate(est_centroid = mean(diff))
-
-
-#plot traces:
-
-
-trp_clustered %>%
-  group_by(cluster) %>%
-  mutate(n = n()/12) %>%
-  dplyr::filter(n >= 20) %>%
-  dplyr::select(time_num, pg_protein_accessions, cluster, FC = diff, Centroid = est_centroid) %>%
-  mutate(Norm = "Log2-FC") %>%
-  mutate(clusters = paste0("Cluster ", cluster)) %>%
-  ggplot(aes(x = time_num, y = FC, group = pg_protein_accessions)) +
-  geom_line(alpha = 0.2)+
-  geom_line(aes(x = time_num, y = Centroid, color = "red")) +
-  geom_point(aes(x = time_num, y = Centroid, color = "red")) +
-  theme_bw()+
-  theme(strip.background = element_blank()) +
-  theme(axis.text.x = element_text(hjust = 1, angle = 45)) +
-  facet_grid(Norm ~ clusters,  scales = "free_y")+
-  labs(title = " ", x = "", y = "")+
-  guides(color="none")
-
-
-
-```
-
-
 
 
 
@@ -434,12 +350,10 @@ lip_hc_clustered = cbind(gls_time_wide, clusters) %>%
   mutate(maxmin_centroid = mean(max_min_score)) %>%
   ungroup()
 
-
 # Plotting of Dendrogram
 
 plot(hc_lip, main = "Hierarchical clustering of LiP data:",xlab = "", ylab = "", pch = clusters, labels = F)
 rect.hclust(hc_lip, k = length(unique(clusters)), cluster = clusters)
-
 
 svg("./Temporal_LiP/GB04_AnalysisOutput/GB04_plots/Dendrogram.svg")
 
@@ -449,22 +363,10 @@ rect.hclust(hc_lip, k = length(unique(clusters)), cluster = clusters)
 
 dev.off() 
 
-
 # PCA + Clusters
-
 
 fviz_cluster(list(data = cluster_data_lip, cluster = clusters))
 
-
-
-
-
-
-```
-```{r}
-x = gls_time_wide %>%
-  dplyr::filter(`5_min` == 1 |
-                `15_min` == 1 )
 ```
 
 
@@ -500,7 +402,7 @@ ggsave("./Temporal_LiP/GB04_AnalysisOutput/GB04_plots/All_ts_cluster_plot.png",
        height = 3,
        width = 10)
 
-# Selected clusters (over 10 peptides)
+# Selected clusters (over 40 peptides)
 
 
 plot = rbind(lip_hc_clustered %>%
@@ -524,12 +426,10 @@ plot = rbind(lip_hc_clustered %>%
   
 plot
 
-
 ggsave("./Temporal_LiP/GB04_AnalysisOutput/GB04_plots/Selected_ts_cluster_plot.png",
        plot,
        height = 3,
        width = 10)
-
 
 
 ```
@@ -682,12 +582,11 @@ plot = n_per_cluster %>%
   geom_col(position = position_dodge(), color = "black")+
   theme_bw()+ 
   theme(legend.position = "left",
-        legend.key.size = unit(0.4, "cm"),
-        legend.margin = margin(r=- 0.6, unit = "cm")) + 
+        legend.key.size = unit(0.4, "cm")) + 
   theme(panel.grid = element_blank()) +
   theme(strip.background = element_blank()) +
   scale_fill_brewer(palette = "BuPu") +
-  labs(title = " ",x = "", y = "", fill = "")+
+  labs(title = " ",x = "", y = "# features", fill = "")+
   facet_wrap(. ~ facet, scales = "free")
   
 plot

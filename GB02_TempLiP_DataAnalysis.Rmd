@@ -49,6 +49,7 @@ uniprot = fread("Uniprot_human_230420.tsv")
 ```
 Data wrangling and make time series data frame
 ```{r}
+# extract time from contrasts, join with Gene names
 gls_adj = gls_adj_raw %>%
   mutate(time = gsub("-0_min","",contrast)) %>%
   left_join(pep_metadata %>%
@@ -56,7 +57,8 @@ gls_adj = gls_adj_raw %>%
               unique(),
             by = "eg_modified_sequence")
 
-
+#Create time point 0, transform estimate (invert if mean below 0 and max-min normalise)
+#Identify significant traces & how many tps are sig after each other
 gls_time = rbind(
   gls_adj %>%
     dplyr::select(Gene,
@@ -110,11 +112,9 @@ gls_time_wide = gls_time %>%
 
 ```
 
-Plot of number of changes
+Plot of number of changes per timepoint and protein
 ```{r}
-# Changes per time point and protein 
-
-relative_changes_plot = gls_time %>%
+plot = gls_time %>%
   dplyr::filter(time_num != 0) %>%
   dplyr::filter(n_sig_per_prot > 0) %>%
   dplyr::select(time_num, rel_sig_per_prot) %>%
@@ -126,20 +126,16 @@ relative_changes_plot = gls_time %>%
   labs(title = " ", x = "Relative LiP changes per protein", y = "Number of peptides per bin") +
   facet_wrap(. ~ as.factor(time_num))
 
-
-relative_changes_plot
-
-
+plot
 
 ggsave("./Temporal_LiP/GB02_AnalysisOutput/GB02_plots/Relative_Changes.png",
-       relative_changes_plot,
+       plot,
        height = 4,
        width = 7)
 
-
 ```
 
-Comparison with SW correction
+Comparison of GLS with MSstatsLiP correction
 ```{r}
 test = gls_adj %>%
   inner_join(sw_adj %>%
@@ -158,17 +154,15 @@ plot = test %>%
   labs(title = "", x = "GLS", y = "MSstasts") +
   facet_wrap(.~ facet)
 
+plot
+
 
 ggsave("./Temporal_LiP/GB02_AnalysisOutput/GB02_plots/MSstats_log2fc.png",
        plot,
        height = 3,
        width = 5)
 
-
-plot
-
 Cor = cor(test$p.value, test$pval)
-
 
 plot = test %>%
   mutate(facet = paste0("Correlation of p-values: ", round(Cor,2))) %>%
@@ -180,20 +174,20 @@ plot = test %>%
   labs(title = "", x = "GLS", y = "MSstasts") +
   facet_wrap(.~ facet)
 
+plot
+
 ggsave("./Temporal_LiP/GB02_AnalysisOutput/GB02_plots/MSstats_pval.png",
        plot,
        height = 3,
        width = 5)
-
-plot
-
 ```
 
 Hierarchical Clustering
 
 ```{r}
-set.seed(1234)
-# Parameters to test:
+set.seed(1234) # not required as clustering is non stochastic but who knows
+
+# Cut-Off
 
 k_clusters = 15
 
@@ -239,7 +233,6 @@ dev.off()
 
 # PCA + Clusters
 
-
 fviz_cluster(list(data = cluster_data_lip, cluster = clusters))
 ```
 
@@ -270,14 +263,12 @@ plot = rbind(lip_hc_clustered %>%
 
 plot
 
-
 ggsave("./Temporal_LiP/GB02_AnalysisOutput/GB02_plots/All_ts_cluster_plot.png",
        plot,
        height = 3,
        width = 10)
 
 # Selected clusters (over 10 peptides)
-
 
 plot = rbind(lip_hc_clustered %>%
   dplyr::filter(obs_per_cluster >= 10) %>%
@@ -300,14 +291,10 @@ plot = rbind(lip_hc_clustered %>%
   
 plot
 
-
 ggsave("./Temporal_LiP/GB02_AnalysisOutput/GB02_plots/Selected_ts_cluster_plot.png",
        plot,
        height = 3,
        width = 10)
-
-
-
 ```
 
 
@@ -338,6 +325,7 @@ hc_call = lip_hc_clustered  %>%
   mutate(prot_per_cluster = n()) %>%
   ungroup()
 
+# Number of clusters per peptide trace after calling
 hc_call %>%
   group_by(Gene) %>%
   mutate(N = n()) %>%
@@ -347,6 +335,7 @@ hc_call %>%
   mutate(Number_n = n()) %>%
   unique()
 
+# Number of clusters per peptide trace before calling
 lip_hc_clustered %>%
   dplyr::select(clusters, Gene) %>%
   unique() %>%
@@ -364,7 +353,7 @@ lip_hc_clustered %>%
 
 Plot with significant pep/prot per time point and features per cluster
 ```{r}
-# Significant changes per time point:
+# Calculate number significant changes per time point for pep and prot
 
 sig_per_time = rbind(
   gls_time %>%
@@ -392,19 +381,20 @@ sig_per_time = rbind(
   mutate(x_value = as.character(x_value)) %>%
   mutate(facet = "% Significant/time point")
 
+# Plot sig number of changes per timepoint
 
 plot = sig_per_time %>%
+  mutate(facet = "Significant IDs per time point [min]") %>%
   mutate(x_value = fct_reorder(x_value, order)) %>%
   ggplot(aes(x = x_value, y = value, fill = entity)) +
   geom_col(position = position_dodge(), color = "black")+
   theme_bw()+ 
   theme(legend.position = "left",
-        legend.key.size = unit(0.4, "cm"),
-        legend.margin = margin(r=- 0.6, unit = "cm")) + 
+        legend.key.size = unit(0.4, "cm")) + 
   theme(panel.grid = element_blank()) +
   theme(strip.background = element_blank()) +
   scale_fill_brewer(palette = "BuPu") +
-  labs(title = " ",x = "", y = "", fill = "")+
+  labs(title = "",x = "", y = "% significant IDs", fill = "")+
   facet_wrap(. ~ facet, scales = "free")
   
 plot
@@ -412,10 +402,9 @@ plot
 ggsave(paste0("./Temporal_LiP/GB02_AnalysisOutput/GB02_plots/Relative_Sig_per_timepoint.png"),
       plot,
       height = 3,
-      width = 3)
+      width = 3.5)
 
-
-#Plot Features per cluster
+# Count features (pep or prot) per cluster
 
 n_per_cluster = rbind(
   lip_hc_clustered %>%
@@ -452,20 +441,21 @@ n_per_cluster = rbind(
   mutate(order = row_number()) %>%
   mutate(facet = "Features per cluster")
 
-
+# plot features per cluster
 
 plot = n_per_cluster %>%
+  mutate(facet = "Features per cluster") %>%
   mutate(x_value = fct_reorder(as.factor(x_value), order)) %>%
   ggplot(aes(x = x_value, y = value, fill = entity)) +
   geom_col(position = position_dodge(), color = "black")+
   theme_bw()+ 
-  theme(legend.position = "left",
+  theme(legend.position = "none",
         legend.key.size = unit(0.4, "cm"),
         legend.margin = margin(r=- 0.6, unit = "cm")) + 
   theme(panel.grid = element_blank()) +
   theme(strip.background = element_blank()) +
   scale_fill_brewer(palette = "BuPu") +
-  labs(title = " ",x = "", y = "", fill = "")+
+  labs(title = "",x = "", y = "# features", fill = "")+
   facet_wrap(. ~ facet, scales = "free")
   
 plot
@@ -473,12 +463,9 @@ plot
 ggsave(paste0("./Temporal_LiP/GB02_AnalysisOutput/GB02_plots/Features_per_cluster.png"),
       plot,
       height = 3,
-      width = 4)
+      width = 3)
 
-
-
-# Combined:
-
+# Plot combined facet wrap plot
 
 plot = rbind(sig_per_time, n_per_cluster) %>%
   mutate(x_value = fct_reorder(x_value, order)) %>%
@@ -502,7 +489,7 @@ ggsave(paste0("./Temporal_LiP/GB02_AnalysisOutput/GB02_plots/Features_per_cluste
       width = 5)
 
 
-#For dendrogram title:
+#For dendrogram title (Mock plot to combine using inkscape because dendograms in R are not looking good):
 
 plot = n_per_cluster %>%
   mutate(facet = "Hierarchical clustering of peptide traces") %>%
@@ -518,10 +505,10 @@ plot = n_per_cluster %>%
   theme(panel.grid = element_blank()) +
   theme(strip.background = element_blank()) +
   scale_fill_brewer(palette = "BuPu") +
-  labs(title = " ",x = "", y = "", fill = "")+
+  labs(title = " ",x = "", y = "Distance", fill = "")+
   facet_wrap(. ~ facet, scales = "free")
 
-ggsave(paste0("./Temporal_LiP/GB02_AnalysisOutput/GB02_plots/DendroTitle.jpeg"),
+ggsave(paste0("./Temporal_LiP/GB02_AnalysisOutput/GB02_plots/DendroTitle.png"),
       plot,
       height = 3,
       width = 3.5)
@@ -531,18 +518,23 @@ ggsave(paste0("./Temporal_LiP/GB02_AnalysisOutput/GB02_plots/DendroTitle.jpeg"),
 
 
 
-GO-Enrichment of clusters
+GO-Enrichment of clusters for supplementary
 ```{r}
-set.seed(123)
+set.seed(123) # Again, nothing stochastic but who knows
 
-#GO over representation analysis for clusters:
-
+# GO over representation analysis for clusters:
+# Background is all detected proteins
 universe = unique(gls_adj$pg_protein_accessions)
+
 
 cluster = unique(hc_call$clusters)
 
 
 GO_overrep_Lip_BP = data.frame()
+
+# Iterate GO-BP enrichment over clusters
+# No cut-off, minimal Genesets of 5, maximum of 500
+# pval adjustment using Benjamini Hochberg
 
 for (i in cluster){
   
@@ -562,7 +554,6 @@ for (i in cluster){
            maxGSSize = 500,
            OrgDb = organism, 
            pAdjustMethod = "BH")
-
   
       simple_GO = simplify(GO, cutoff = 0.7)
 
@@ -607,6 +598,10 @@ for (i in cluster){
 
 GO_overrep_LiP_MF = data.frame()
 
+# Iterate GO-enrichment over clusters
+# No cut-off, minimal Genesets of 5, maximum of 500
+# pval adjustment using Benjamini Hochberg
+
 
 for (i in cluster){
   
@@ -622,7 +617,7 @@ for (i in cluster){
        keyType = "UNIPROT",
        universe = universe,
        pvalueCutoff = 1, 
-       minGSSize = 10,
+       minGSSize = 5,
        maxGSSize = 500,
        OrgDb = organism, 
        pAdjustMethod = "BH")
@@ -662,15 +657,16 @@ for (i in cluster){
 }
 ```
 
-
-
-Plots of unfiltered top 25 GO terms for all clusters
+Plots of unfiltered top 25 GO terms for all clusters for supplementary
 ```{r}
 cluster = seq(1:k_clusters)
 
+# Filter BP and MF results and combine them,
+# then facet wrap for each cluster
+# painful new-line insertion is for plots to look nice
+
 for (i in cluster){
-  temp_BP = GO_overrep_Lip_BP %>% 
-    mutate(Description = gsub("ubiquitin-dep","ubiquitin\n-dep", Description)) %>%
+  temp_BP = GO_overrep_Lip_BP %>%
     dplyr::filter(cluster == i) %>%
     arrange(p.adjust) %>%
     mutate(rank = row_number()) %>%
@@ -680,9 +676,6 @@ for (i in cluster){
     mutate(GeneRatio = as.numeric(n_GO)/as.numeric((n_prot)))
   
   temp_MF  = GO_overrep_LiP_MF %>%
-    mutate(Description = gsub(" or o"," \nor o", Description)) %>%
-    mutate(Description = gsub("movement of ions","movement of ions\n", Description)) %>%
-    mutate(Description = gsub("pyrophosphate hydrolysis-driven proton transmembrane transporter activity","pyrophosphate hydrolysis-driven proton\ntransmembrane transporter activity", Description)) %>%
     dplyr::filter(cluster == i) %>%
     arrange(p.adjust) %>%
     mutate(rank = row_number()) %>%
@@ -695,19 +688,30 @@ for (i in cluster){
 
   if(nrow(temp_BP) > 0 & nrow(temp_MF > 0)){
     plot = rbind(temp_BP, temp_MF) %>%
-      group_by(GO_type) %>%
+      mutate(log10adj = -log10(p.adjust)) %>%
+      group_by(GO_type) %>% 
+      mutate(Description = gsub("ubiquitin-dep","ubiquitin\n-dep", Description)) %>%
+      mutate(Description = gsub(" or o"," \nor o", Description)) %>%
+      mutate(Description = gsub("coupled to transmembrane movement of ions","coupled to transmembrane movement\nof ions", Description)) %>%
+      mutate(Description = gsub("pyrophosphate hydrolysis-driven proton transmembrane transporter activity","pyrophosphate hydrolysis-driven proton\ntransmembrane transporter activity", Description)) %>%
+      mutate(Description = gsub("nucleobase-containing small molecule "," nucleobase-containing small molecule\n", Description)) %>%
+      mutate(Description = gsub("proton-transporting ATP synthase activity, "," proton-transporting ATP synthase activity,\n", Description))%>%
+      mutate(Description = gsub("phosphotransferase activity, alcohol","phosphotransferase activity,\nalcohol", Description)) %>%
+      mutate(Description = gsub("transmembrane receptor protein tyrosine kinase activity","transmembrane receptor protein\ntyrosine kinase activity", Description)) %>%
+      mutate(Description = gsub("activity, transposing S-S bonds","activity,\ntransposing S-S bonds", Description)) %>%
+      mutate(Description = gsub("nucleobase-containing small molecule metabolic process","nucleobase-containing small\nmolecule metabolic process", Description)) %>%
       mutate(Description = fct_reorder(Description, GeneRatio)) %>%
-      ggplot(aes(y = Description, x = GeneRatio, fill = p.adjust)) +
-      theme_bw()+
-      theme(panel.grid = element_blank()) +
-      theme(strip.background = element_blank()) +
-      scale_fill_gradient2(low = "#810f7c", mid = "#8c96c6",high = "#f7fcfd", 
-                       midpoint = 0.025, breaks = c(0,0.1, 0.02, 0.03, 0.04, 0.05), 
-                       limits = c(0,0.05))+
-      geom_col(color = "black") + 
-      labs(title = paste0("GO-Enrichments for cluster ",i, " with ", n_prot, " Proteins"), y = "", x = "Gene Ratio", fill = "adj. pvalue") +
-      theme(legend.position = "left") +
-      facet_wrap(GO_type ~., scales = "free_y")
+      ggplot(aes(y = Description, x = GeneRatio, fill = log10adj)) +
+        theme_bw()+
+        theme(panel.grid = element_blank()) +
+        theme(strip.background = element_blank()) +
+        scale_fill_gradient2(low = "#f7fcfd", mid = "#8c96c6",high = "#810f7c", 
+                       midpoint = 2, breaks = c(1.3, 2, 3, 4, 5), 
+                       limits = c(1.3,5.2))+
+        geom_col(color = "black") + 
+        labs(title = paste0("GO-Enrichments for cluster ",i, " with ", n_prot, " Proteins"), y = "", x = "Gene Ratio", fill = expression(-log[10](Adj.pval))) +
+        theme(legend.position = "left") +
+        facet_wrap(GO_type ~., scales = "free_y")
   
     print(plot)
     
@@ -721,21 +725,15 @@ for (i in cluster){
   else{
     print(paste0("No significant enrichment in cluster ", i))
   }
-  
-
-
 }
-
-  
-
 ```
 
 GO: Enrichment for trends:
-
 ```{r}
 set.seed(123)
 
-#GO over representation analysis for early response clusters (1, 2, 6, 9):
+# GO over representation analysis for early response clusters (1, 2, 6, 9):
+# Done the same way as before
 
 genes = (hc_call %>%
            filter(clusters %in% c(1, 2, 6, 9)) %>%
@@ -864,63 +862,7 @@ GO_control = rbind(GO_BP_control@result %>%
 
 ```
 
-Plotting of early and late response:
-```{r}
-# Top 25 early
-
-n_prot = unique(GO_early_response$n_prot)
-
-plot = GO_early_response %>%
-  dplyr::filter(p.adjust <= 0.05) %>%
-      ggplot(aes(y = Description, x = GeneRatio, fill = p.adjust)) +
-      theme_bw()+
-      theme(panel.grid = element_blank()) +
-      theme(strip.background = element_blank()) +
-      scale_fill_gradient2(low = "#810f7c", mid = "#8c96c6",high = "#f7fcfd", 
-                       midpoint = 0.025, breaks = c(0,0.1, 0.02, 0.03, 0.04, 0.05), 
-                       limits = c(0,0.05))+
-      geom_col(color = "black") + 
-      labs(title = paste0("GO-Enrichments for early response clusters (1,2,6,9) with ", n_prot, " Proteins"), y = "", x = "Gene Ratio", fill = "adj. pvalue") +
-      facet_wrap(GO_type ~., scales = "free_y")
-  
-plot
-
-
-ggsave(paste0("./Temporal_LiP/GB02_AnalysisOutput/GB02_plots/AllGO/SupplementaryGO_cluster_Early_Response.png"),
-       plot,
-      height = 20,
-      width = 10)
-
-# Top 25 late
-
-n_prot = unique(GO_late_response$n_prot)
-
-plot = GO_late_response %>%
-  dplyr::filter(p.adjust <= 0.05) %>%
-      ggplot(aes(y = Description, x = GeneRatio, fill = p.adjust)) +
-      theme_bw()+
-      theme(panel.grid = element_blank()) +
-      theme(strip.background = element_blank()) +
-      scale_fill_gradient2(low = "#810f7c", mid = "#8c96c6",high = "#f7fcfd", 
-                       midpoint = 0.025, breaks = c(0,0.1, 0.02, 0.03, 0.04, 0.05), 
-                       limits = c(0,0.05))+
-      geom_col(color = "black") + 
-      labs(title = paste0("GO-Enrichments for late response clusters (3,4,5,8) with ", n_prot, " Proteins"), y = "", x = "Gene Ratio", fill = "adj. pvalue") +
-      facet_wrap(GO_type ~., scales = "free_y")
-  
-plot
-
-ggsave(paste0("./Temporal_LiP/GB02_AnalysisOutput/GB02_plots/AllGO/SupplementaryGO_cluster_Late_Response.png"),
-       plot,
-      height = 20,
-      width = 10)
-
-```
-
-
-
-
-GO: Reduced plot for early and late response
+GO: Reduced plot for early and late response (selected terms)
 ```{r}
 BP_early = paste0("Biological Process",c(1,2,5,6,12,13,14,17,29,39,47,50,58,68))
 
@@ -939,32 +881,30 @@ plot = rbind(GO_early_response %>%
                dplyr::filter(selection %in% BP_late | selection %in% MF_late) %>%
                mutate(Response = "Late response")) %>% 
   ungroup() %>%
+  mutate(log10adj = -log10(p.adjust)) %>%
   mutate(Description = gsub("protein tyrosine","protein\ntyrosine", Description)) %>%
   mutate(Description = gsub("protein-coupled","protein-\ncoupled", Description)) %>%
   mutate(Description = gsub("interspecies interaction","interspecies\ninteraction", Description)) %>%
   mutate(Description = fct_reorder(Description, Count)) %>%
-  ggplot(aes(y = Description, x = GeneRatio, fill = p.adjust)) +
+  ggplot(aes(y = Description, x = GeneRatio, fill = log10adj)) +
       theme_bw()+
       theme(panel.grid = element_blank()) +
       theme(strip.background = element_blank()) +
+      theme(legend.position = "left") +
       theme(axis.text.y = element_text(lineheight = 0.75, size = 8))  +
-      scale_fill_gradient2(low = "#810f7c", mid = "#8c96c6",high = "#f7fcfd", 
-                       midpoint = 0.025, breaks = c(0,0.1, 0.02, 0.03, 0.04, 0.05), 
-                       limits = c(0,0.05))+
+      scale_fill_gradient2(low = "#f7fcfd", mid = "#8c96c6",high = "#810f7c", 
+                       midpoint = 2, breaks = c(1.3, 2, 3, 4, 5), 
+                       limits = c(1.3,5.2))+
       geom_col(color = "black") + 
-      labs(y = "", x = "Gene Ratio", fill = "adj. pvalue") +
+      labs(y = "", x = "Gene Ratio", fill = expression(-log[10](Adj.pval))) +
       facet_wrap(Response ~ GO_type, scales = "free_y")
-
-
 
 plot
   
-
 ggsave(paste0("./Temporal_LiP/GB02_AnalysisOutput/GB02_plots/AllGO/Main_GOfiltered_Response.png"),
        plot,
        height = 8,
        width = 10)
-
 
 # Write supplementary tables:
 
@@ -976,7 +916,6 @@ table = GO_early_response %>%
 
 fwrite(table, "./Temporal_LiP/GB02_AnalysisOutput/GO_early_supplementarytable.csv")
 
-
 table = GO_late_response %>%
   mutate(GeneRatio = round(GeneRatio, 3)) %>%
   dplyr::select(Description, Count, GeneRatio, p.adjust, GO_type) %>%
@@ -984,10 +923,9 @@ table = GO_late_response %>%
   dplyr::filter(p.adjust <= 0.05) 
 
 fwrite(table, "./Temporal_LiP/GB02_AnalysisOutput/GO_late_supplementarytable.csv")
-
 ```
 
-Nice QC-plot for supplementary:
+QC-plots for supplementary:
 ```{r}
 # Coefficients of variation: 
 plot = lip_pep %>%
@@ -1000,8 +938,6 @@ plot = lip_pep %>%
     plot_style = "violin")  +
   theme(legend.position = "none") +
   labs(title = "Coefficients of variation of mod. peptides")
-
-
 
 plot 
 
@@ -1019,7 +955,6 @@ lip_pep %>%
     intensity = intensity,
     plot = F
   )
-
 
 # Number of peptide identifications:
 
@@ -1094,7 +1029,6 @@ plot = lip_pep %>%
     intensity_log2 = pep_int,
     condition = r_condition
     )
-
 
 plot 
 
